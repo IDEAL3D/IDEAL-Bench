@@ -1,11 +1,11 @@
-# IDL3D — Python 依赖（在仓库根目录执行: pip install -r requirements.txt）
-# 建议 Python >= 3.10。
+# IDL3D — 默认全量依赖（推理 + 重建 + generation / Infinigen）
+# 在仓库根 IDL3D/ 执行: pip install -r requirements.txt
+# 建议 Python >= 3.10；请先 git submodule update --init infinigen-idl3d
+#
+# 下列 -r 含 Infinigen 所需的 gin-config、opencv、trimesh、scipy 等全部包；
+# 其中可能有 git+ssh 可编辑依赖（infinigen_internal、robosuite 等），无权限时需按团队文档改源。
+-r infinigen-idl3d/requirements.txt
 
-# ── 重建：默认 --runner bpy（pip bpy，无需安装 blender 可执行文件）──
-numpy>=1.26.0,<3
-# 与 InfiniGen 相同：Blender Python API；版本宜与 .blend 主版本一致（如 4.2.x）
-bpy>=4.2.0,<5
-
-# ── 推理 inference/infer.py ──
+# 云端 VLM 推理（不在 Infinigen 锁文件中）
 google-genai>=1.0.0
 openai>=1.30.0

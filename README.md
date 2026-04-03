@@ -2,11 +2,34 @@
 
 本仓库是 **室内空间理解** 方向的 **数据集与评测（Datasets & Benchmarks）** 工程：在固定几何与 JSON 协议下，评测多模态大模型（如 GPT、Gemini、Qwen 等）从**单张室内图像**（以及规划中的**短视频**）中理解布局并输出结构化场景描述的能力；并支持在 Blender 中依据模型输出做**场景重建**与**渲染对比**，从**客观几何指标**与**主观图像指标**两方面打分。
 
-更完整的产品与流程说明见 [`项目资料/D&B项目.md`](项目资料/D&B项目.md)。
+更完整的产品与流程说明见 [`项目资料/D&B项目.md`](项目资料/D&B项目.md)。该文档描述的整体管线为：**魔改 Infinigen 合成场景** → **预处理得到 GT / info** → **VLM 推理** → **硬指标** → **按预测重建并渲染** → **Judge VLM 软指标**；本仓库同时承载 **生成侧脚本**（`generation/`，依赖子模块中的 Infinigen）与 **评测侧**（推理、重建、后续 benchmark）。
 
-**运行环境**：建议在 **Linux**（常见为 x86_64）上进行开发与复现。推理、重建及 PyPI 上的 **`bpy`** 等依赖在 Linux 上最易一键安装；若使用 macOS / Windows，需自行核对各包是否提供对应轮子及版本。
+**运行环境**：建议在 **Linux**（常见为 x86_64）上进行开发与复现。推理、重建、场景生成及 PyPI 上的 **`bpy`** 等依赖在 Linux 上最易一键安装；若使用 macOS / Windows，需自行核对各包是否提供对应轮子及版本。生成侧通常需要 **NVIDIA GPU**（显存依采样与分辨率而定）。
 
-**Python 依赖**：仓库根目录 [`requirements.txt`](requirements.txt)（含 `numpy` / **`bpy`** 及推理客户端等）。在 **`IDL3D/`** 下执行 `pip install -r requirements.txt`。重建默认 **`--runner bpy`**：用当前解释器的 **`bpy` 包** 加载 `.blend` 并渲染（与 InfiniGen 一致），**不要求**安装带 UI 的 Blender 或把 `blender` 加入 PATH。若希望改用官方命令行，可加 **`--runner blender`**（并安装 Blender 或设置 `BLENDER_EXECUTABLE`）。`bpy` 版本建议与场景 `.blend` 主版本接近（如 4.2.x）。
+---
+
+### Python 依赖（分层）
+
+| 场景 | 安装命令（均在 **`IDL3D/`** 下） | 说明 |
+|------|----------------------------------|------|
+| **默认：生成 + 推理 + 重建** | `git submodule update --init infinigen-idl3d` 后 **`pip install -r requirements.txt`** | 根目录 [`requirements.txt`](requirements.txt) 通过 **`-r infinigen-idl3d/requirements.txt`** 拉齐 Infinigen 全量依赖，再追加 **`google-genai`**、**`openai`**。跑 **`generation/`** 必须用这一套（仅有 `numpy`/`bpy`/`mathutils` 不够）。 |
+| **仅推理 + 重建**（不跑本地合成） | **`pip install -r requirements-minimal.txt`** | [`requirements-minimal.txt`](requirements-minimal.txt)：最小 **`numpy` / `bpy` / `mathutils`** + 云端客户端；**不包含** `gin-config`、`trimesh`、`scipy` 等，**无法**运行 `generation/`。 |
+
+**Infinigen 锁文件里有什么**：[`infinigen-idl3d/requirements.txt`](infinigen-idl3d/requirements.txt) 与上游管线一致，含 **`bpy`**、**`gin-config`**、**`numpy`**、**`opencv-python`**、**`trimesh`**、**`imageio`**、**`scipy`**、**`matplotlib`**、**`scikit-image`**、**`Pillow`**、**`OpenEXR`**、**`usd-core`** 等；并可能有 **`infinigen_internal`**、**`robosuite`** 等 **git+ssh** 可编辑依赖，无权限时需按团队 fork / 镜像改锁文件后再 `pip`。
+
+生成入口在 **`generation/`**；子进程在 **`infinigen-idl3d/`** 下以 **`python -m infinigen_examples.single`** 等方式启动，见 `generate_box.py`。路径常量见 [`generation/infinigen_paths.py`](generation/infinigen_paths.py)。
+
+**`bpy` 版本**：建议与 `.blend` 主版本一致（锁文件示例 **4.2.x**）；推理、重建与生成宜共用同一 minor 版本。
+
+| 模块 | 依赖层级 |
+|------|----------|
+| **`inference/infer.py`** | 任一档安装均含 **`google-genai`**、**`openai`**（minimal 或全量）。 |
+| **`reconstruction/`** | 需 **`bpy`** + **`mathutils`**（全量锁文件已含 `mathutils`；minimal 单独列出）。默认 **`--runner bpy`**；可选 **`--runner blender`** 并设置 **`BLENDER_EXECUTABLE`**。 |
+| **`generation/`**、**`preprocess_lib/`** | 仅 **全量** `requirements.txt`；依赖 Infinigen Python 与锁文件中的科学计算栈。 |
+
+---
+
+重建默认使用 `--runner bpy`：用当前解释器的 **`bpy` 包** 加载 `.blend` 并渲染（与 InfiniGen 一致），**不要求**安装带 UI 的 Blender 或把 `blender` 加入 PATH。
 
 ---
 
@@ -23,7 +46,7 @@
 | **文档与约定** | `docs/`：几何规则（论文附录级）、协议草图（`schema_design.json`，人类可读，非校验器）。 |
 | **API 与本地配置** | `api/`：如 `check_api.py`、密钥 CSV 等；**整目录默认不提交**（见 `.gitignore` 与下文）。 |
 
-**场景生成与预处理**：目前仍在独立工程（InfiniGen 及自有脚本）中完成；处理完成后将场景**手动拷贝**至本仓库的 `data/scenes/`。后续若迁移生成/预处理代码，可再单独规划子模块或新仓库，**不阻塞**本仓库以「冻结数据 + 评测与推理」为主线的开发。
+**场景生成**：矩形单房间管线入口在 **`generation/`**（`generate.py` → `generate_box.py`），依赖 Git 子模块 **`infinigen-idl3d/`**（魔改 Infinigen）。输出目录约定见 `generation/` 内脚本说明（如 `SCENES_SKETCH/`、`SCENES_RAW/`）。**预处理**（GT.json、info.json、overlap 过滤等）可在本仓库其它脚本或外部流水线中完成；处理完成后将场景**拷贝或同步**至 `data/scenes/`、`data/scenes2test/` 等评测用路径。
 
 ---
 
@@ -34,8 +57,12 @@
 ```
 IDL3D/
 ├── README.md                 # 本说明
+├── requirements.txt          # 默认全量：-r infinigen-idl3d + 推理客户端
+├── requirements-minimal.txt  # 仅推理 + 重建（不跑 generation/）
 ├── docs/                     # 几何规则、数据形状说明（附录级文档；非 JSON Schema 校验器）
 ├── 项目资料/                 # 设计文档与笔记（如 D&B 项目说明）
+├── generation/               # Infinigen 场景生成入口（依赖子模块 infinigen-idl3d）
+├── infinigen-idl3d/          # （Git 子模块）魔改 Infinigen 源码与上游依赖锁文件
 ├── data/                     # （默认不提交）冻结数据与测试场景
 │   ├── scenes/               # 收录后的场景数据（每场景一目录）
 │   ├── scenes2test/          # 推理用测试场景（每场景一目录，含 image.png 等）
