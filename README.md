@@ -21,7 +21,7 @@
 | **评测** | `benchmarks/`：客观/主观指标与评测协议；各模型在该场景上的产出与指标快照见仓库根 `result/`（按场景聚合）。 |
 | **配置与规范** | `configs/schema/`（**JSON Schema**，用于校验）、`configs/experiments/`（实验配置）。 |
 | **文档与约定** | `docs/`：几何规则（论文附录级）、协议草图（`schema_design.json`，人类可读，非校验器）。 |
-| **工具** | `tools/`：辅助脚本；**密钥**见下（仅 `tools/secrets/` 被忽略，其余可提交）。 |
+| **API 与本地配置** | `api/`：如 `check_api.py`、密钥 CSV 等；**整目录默认不提交**（见 `.gitignore` 与下文）。 |
 
 **场景生成与预处理**：目前仍在独立工程（InfiniGen 及自有脚本）中完成；处理完成后将场景**手动拷贝**至本仓库的 `data/scenes/`。后续若迁移生成/预处理代码，可再单独规划子模块或新仓库，**不阻塞**本仓库以「冻结数据 + 评测与推理」为主线的开发。
 
@@ -29,19 +29,21 @@
 
 ## 目录结构
 
+**Git**：根目录 [`.gitignore`](.gitignore) 忽略 `data/`、`result/`、`api/`（大数据与测试场景、运行产物、本地 API 密钥与辅助脚本）。克隆仓库后需在本地自备数据目录与 `api/` 配置；下文路径均为**工作区约定**。
+
 ```
 IDL3D/
 ├── README.md                 # 本说明
 ├── docs/                     # 几何规则、数据形状说明（附录级文档；非 JSON Schema 校验器）
 ├── 项目资料/                 # 设计文档与笔记（如 D&B 项目说明）
-├── data/
+├── data/                     # （默认不提交）冻结数据与测试场景
 │   ├── scenes/               # 收录后的场景数据（每场景一目录）
 │   ├── scenes2test/          # 推理用测试场景（每场景一目录，含 image.png 等）
 │   └── manifests/            # 场景清单、划分、版本元数据等
 ├── configs/
 │   ├── schema/               # 输出 / GT 的格式与版本约定
 │   └── experiments/          # 实验与模型批量运行配置
-├── result/                   # 按场景聚合：模型 JSON、重建图、可选 .blend、benchmark 结果等（见下）
+├── result/                   # （默认不提交）按场景聚合：模型 JSON、重建图、可选 .blend、benchmark 结果等（见下）
 ├── inference/
 │   ├── infer.py              # 云端 API 推理入口（示例）
 │   ├── migrate_runs_to_result.py  # 旧 runs/ → result/（一次性）
@@ -60,10 +62,11 @@ IDL3D/
 │   │   └── subjective/       # 图像/主观相关指标
 │   ├── protocols/            # 评测协议说明
 │   └── leaderboard/          # 榜单生成等（可选）
-├── tools/
-│   ├── check_api.py          # 本地检测 API 是否可用（可选）
-│   ├── api_keys.example.csv  # 密钥表格列表示例（可提交）
-│   └── secrets/              # 放置 api_keys.csv（见该目录 README；不提交）
+└── api/                      # （默认不提交）本地 API 检测与密钥
+    ├── check_api.py          # 本地检测 Gemini / OpenAI 等是否可用（可选）
+    └── secrets/
+        ├── README.md         # 放置说明（仅本地）
+        └── api_keys.csv      # provider / model / api_key / base_url（勿提交）
 ```
 
 ### `result/`（仓库根：推理、重建与 benchmark 产物）
@@ -116,10 +119,11 @@ python reconstruction/reconstruct.py --task-dir result/camera --dry-run
 - **`compose.py`**：对配对执行 **`apply_object_overlay`**（预测几何写回），再 **`merge_gt_with_info_layer`** 与全文 **`GT.json`** 合并，写出 **`{model_id}_render.json`**。
 - **`render.py`**（Blender）：按 **`PREPROCESS_DESIGN.md` §3** 将 JSON 写回场景物体（`protocol=floor`）：`position` / `dimensions` / `rotation_yaw`；Empty 零尺寸时用子树 MESH 世界 AABB 估算缩放。**`protocol=camera`** 下不写回几何。
 
-### API 密钥与 `tools` 是否上传
+### API 密钥与 `api/` 目录
 
-- **上传仓库**：`tools/*.py`、`tools/api_keys.example.csv`、`tools/secrets/README.md` 等。
-- **勿上传**：在 `tools/secrets/` 下自行复制示例并保存为 `api_keys.csv`（真实密钥）；该目录内其它文件由 `.gitignore` 忽略。
+- **当前 `.gitignore`**：忽略整个 `api/`，因此 **`check_api.py`、`secrets/api_keys.csv` 等都不会进入远程仓库**，密钥与工作流脚本仅保留在本地，适合「仓库公开、密钥不外泄」。
+- **本地配置**：在 `api/secrets/api_keys.csv` 中按列填写（与 `inference/infer.py`、`api/check_api.py` 读取格式一致：`provider`、`model`、`api_key`、`base_url`）；详见 `api/secrets/README.md`（若存在）。
+- **若希望把 `check_api.py` 提交到 GitHub、仅忽略密钥**：可将 `.gitignore` 改为只忽略 `api/secrets/*`，并在 `api/` 下提供可提交的 `api_keys.example.csv`（列名同上、无真实密钥）。
 
 ### 开源模型权重（如 Qwen）
 
