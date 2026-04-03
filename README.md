@@ -17,7 +17,7 @@
 
 **Infinigen 锁文件里有什么**：[`infinigen-idl3d/requirements.txt`](infinigen-idl3d/requirements.txt) 与上游管线一致，含 **`bpy`**、**`gin-config`**、**`numpy`**、**`opencv-python`**、**`trimesh`**、**`imageio`**、**`scipy`**、**`matplotlib`**、**`scikit-image`**、**`Pillow`**、**`OpenEXR`**、**`usd-core`** 等；并可能有 **`infinigen_internal`**、**`robosuite`** 等 **git+ssh** 可编辑依赖，无权限时需按团队 fork / 镜像改锁文件后再 `pip`。
 
-生成入口在 **`generation/generate.py`**；后端在 **`generation/generate_lib/`**（如 `generate_box.py`）；子进程在 **`infinigen-idl3d/`** 下以 **`python -m infinigen_examples.single`** 等方式启动。路径常量见 [`configs/infinigen_paths.py`](configs/infinigen_paths.py)。
+生成入口在 **`generation/generate.py`**；后端在 **`generation/generate_lib/`**（如 `core.py`）；子进程在 **`infinigen-idl3d/`** 下以 **`python -m infinigen_examples.single`** 等方式启动。路径常量见 [`configs/infinigen_paths.py`](configs/infinigen_paths.py)。场景 `metadata.json` 字段约定见 [`docs/METADATA_SCHEMA.md`](docs/METADATA_SCHEMA.md)。
 
 **`bpy` 版本**：建议与 `.blend` 主版本一致（锁文件示例 **4.2.x**）；推理、重建与生成宜共用同一 minor 版本。
 
@@ -46,7 +46,7 @@
 | **文档与约定** | `docs/`：几何规则（论文附录级）、协议草图（`schema_design.json`，人类可读，非校验器）。 |
 | **API 与本地配置** | `api/`：如 `check_api.py`、密钥 CSV 等；**整目录默认不提交**（见 `.gitignore` 与下文）。 |
 
-**场景生成**：矩形单房间管线入口在 **`generation/`**（`generate.py` → `generate_box.py`），依赖 Git 子模块 **`infinigen-idl3d/`**（魔改 Infinigen）。输出目录约定见 `generation/` 内脚本说明（如 `SCENES_SKETCH/`、`SCENES_RAW/`）。**预处理**（GT.json、info.json、overlap 过滤等）可在本仓库其它脚本或外部流水线中完成；处理完成后将场景**拷贝或同步**至 `data/scenes/`、`data/scenes2test/` 等评测用路径。
+**场景生成**：矩形单房间管线入口在 **`generation/`**（`generate.py` → `generate_lib/core.py`），依赖 Git 子模块 **`infinigen-idl3d/`**（魔改 Infinigen）。输出目录约定见 `generation/` 内脚本说明（如 `SCENES_SKETCH/`、`SCENES_RAW/`）。**预处理**（GT.json、info.json、overlap 过滤等）可在本仓库其它脚本或外部流水线中完成；处理完成后将场景**拷贝或同步**至 `data/scenes/`、`data/scenes2test/` 等评测用路径。
 
 ---
 

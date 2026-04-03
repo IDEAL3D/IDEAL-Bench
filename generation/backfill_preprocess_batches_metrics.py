@@ -29,7 +29,7 @@ for _p in (_REPO_ROOT, _GENERATION_DIR):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
-from preprocess_lib import orchestrator as p  # noqa: E402
+from preprocess_lib import core as p  # noqa: E402
 
 
 def _load_batch_tables(

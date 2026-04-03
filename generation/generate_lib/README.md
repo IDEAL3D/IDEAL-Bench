@@ -1,6 +1,6 @@
 # `generation/generate_lib/` — 合成 / 渲染后端
 
-本目录**仅**服务 [`../generate.py`](../generate.py) 一条线（如 `generate_box.py`、`finalize_existing_scene.py` 等）。  
+本目录**仅**服务 [`../generate.py`](../generate.py) 一条线（如 `core.py` 等）。一次性修补旧 RAW 的脚本在上一级 [`../fix_existing_scene.py`](../fix_existing_scene.py)，非管线核心。  
 **预处理**是并列的另一条线：入口 [`../preprocess.py`](../preprocess.py），库 [`../preprocess_lib/`](../preprocess_lib/)，**不在本目录内**。  
 路径常量见 [`../../configs/infinigen_paths.py`](../../configs/infinigen_paths.py)；Infinigen 克隆在 **`../../infinigen-idl3d/`**。
 
@@ -15,17 +15,17 @@
 ### generate.py — 统一生成与渲染入口（推荐）
 
 ```
-用途：   调用 generate_box.py 生成矩形单房间，统一参数与默认值
-适用：   日常生成单房间场景；无需直接调用 generate_box.py
+用途：   调用 core.py 生成矩形单房间，统一参数与默认值
+适用：   日常生成单房间场景；无需直接调用 core.py
 ```
 
 **调用关系：**
 ```
-../generate.py → generate_box.py → infinigen_examples.single
+../generate.py → core.py → infinigen_examples.single
 ```
 
 **统一参数（常用）：**
-- `--room-type`：住宅 6 类 + 办公/教学 4 类，共 **10 种**（见脚本内 `ROOM_TYPES_UNIFIED`：bedroom、homestudio、living-room、kitchen、bathroom、dining-room、open-office、meeting-room、classroom、library）
+- `--room-type`：共 **10** 种 canonical（`configs/constant.py` 的 `ROOM_TYPES`：如 `bedroom`、`homestudio`、`livingroom`、`diningroom`、`office`、`meetingroom` 等）；对内映射到 Infinigen 串，不改 Infinigen 仓库
 - `--render`：`1280`（默认，1280×720）或 `640`（640×360）
 - `--num-scenes`：生成数量，默认 1
 - `--room-size`：small / medium / large / xlarge，默认 medium
@@ -41,14 +41,14 @@ cd /scratch2/f0080vw/IDL3D/generation
 
 python generate.py
 python generate.py --room-type kitchen --num-scenes 5
-python generate.py --room-type bedroom --room-size-mix small:3,medium:3,large:3
+python generate.py --room-type library --room-size-mix small:3,medium:3,large:3
 ```
 
-**输出目录：** `SCENES_SKETCH/{roomtype}_{size}_s{seed}/`（如 `livingroom_medium_s42`）。收尾后见 `generate_box` 说明（`color.png` / `metadata.json` 等）；后续 GT / `info.json` 由**并列**的 [`../preprocess.py`](../preprocess.py) 管线写出。
+**输出目录（新批次）：** `SCENES_SKETCH/{canonical}_s{seed}/`（如 `livingroom_s42`）；旧目录（含历史 `livingroom_s*` 无下划线旧批次等）并存、无自动迁移。
 
 ---
 
-### generate_box.py — 矩形单房间（generate.py 的后端）
+### core.py — 矩形单房间（generate.py 的后端）
 
 ```
 用途：   生成单个矩形房间（可控尺寸）+ 家具
@@ -58,7 +58,7 @@ python generate.py --room-type bedroom --room-size-mix small:3,medium:3,large:3
 
 **调用链：**
 ```
-generate_box.py
+core.py
   └─ infinigen_examples.single           (Blender 子进程)
        ├─ configs:  single_room.gin      (指定 PredefinedFloorPlanSolver)
        └─ constraints: single_room.py    (single_room_floor_plan → shapely.box)
@@ -66,7 +66,7 @@ generate_box.py
 
 **关键参数：** 与 generate.py 一致；另有 `--render-samples`、`--denoise`/`--no-denoise`、`--gpu`（默认 2）。
 
-**输出目录：** `SCENES_SKETCH/{roomtype}_{size}_s{seed}/`
+**输出目录：** `SCENES_SKETCH/{canonical}_s{seed}/`
 
 ---
 
@@ -124,7 +124,7 @@ generate_all.py
 
 ```
 infinigen-idl3d/infinigen_examples/
-├── single.py                          generate_box.py 的后端
+├── single.py                          core.py 的后端
 ├── generate_indoors.py                generate_all.py 的后端（公寓多房间）
 ├── configs_indoor/
 │   ├── single_room.gin                矩形单房间配置（PredefinedFloorPlanSolver）

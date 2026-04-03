@@ -2,12 +2,12 @@
 """
 INFINIGEN 统一生成与渲染入口。
 
-仅调用 ``generate_lib/generate_box.py``（矩形单房间；地板 XY 以世界原点为中心，见 ``../docs/LIMITATION.md``）。
+仅调用 ``generate_lib/core.py``（矩形单房间；地板 XY 以世界原点为中心，见 ``../docs/LIMITATION.md``）。
 不规则房间管线已弃用，说明见 ``../docs/LIMITATION.md``。
-**房型**：living_space 6 类 + working_space 4 类，共 **10** 种（不含商业空间）。
+**房型**：canonical 见 ``configs.constant.ROOM_TYPES``（snake_case）；对内映射到 Infinigen 串，共 **10** 种。
 
 输出目录命名:
-  <INFINIGEN>/SCENES_SKETCH/{roomtype}_s{seed}/  默认（临时试跑、调参、改场景；非正式数据集）
+  <INFINIGEN>/SCENES_SKETCH/{canonical_room_type}_s{seed}/  默认（临时试跑、调参、改场景；非正式数据集）
   <INFINIGEN>/SCENES_RAW/…                      原始生成输出（未预处理），仅在使用 --scenes-raw 时
   <IDL3D>/SCENES_PROCESSED/                     预处理暂存（脚本自建目录，不由 generate.py 写入）
 
@@ -33,7 +33,7 @@ INFINIGEN 统一生成与渲染入口。
 4. 启动 RAW 批量（示例）::
 
      python generate.py --room-type homestudio --num-scenes 20 --scenes-raw
-
+ 
 5. 与终端「脱钩」但**不停止任务**：按 Ctrl+b，松开后按 d（detach）。之后可安全关 Cursor / 断 VPN。
 6. 再次登录后恢复会话::
 
@@ -45,13 +45,13 @@ INFINIGEN 统一生成与渲染入口。
 否则 SSH 会话结束可能导致进程被挂断。
 
 本脚本在 --scenes-raw 下会：先写 ``SCENES_RAW/manifests/generation_batches.jsonl`` 一条批次（进度字段初为 null、
-``status`` 默认为 ``pending_preprocess``）、每成一景更新该条并追加 ``<room_type>_scenes.csv``；中断时进度已落盘，可再 attach 继续或补登记。
+``status`` 默认为 ``pending_preprocess``）、每成一景更新该条并追加 ``<room_type>_scenes.csv``；中断时进度已落盘，可再 attach 继续。
 ``generation_batches.jsonl`` 的 ``status`` 还可手改为 ``archived`` / ``deleted``（见 manifests/README.txt）。
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 常用参数速查
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  单场景输出（由 generate_box 收尾）：``scene.blend``、``color.png``、``instance_segmentation.png``（uint16 灰度）、``metadata.json``（含相机与 object_index 映射）。
+  单场景输出（由 ``generate_lib.core`` 收尾）：``scene.blend``、``color.png``、``instance_segmentation.png``（uint16 灰度）、``metadata.json``（含相机与 object_index 映射）。
 
   脚本顶部 FIXED_WALL_THICKNESS_M       默认 0.25（米），固定墙厚/地板挤出；设为 None 恢复随机
   --room-type <type>                  单种房型（默认 bedroom）
@@ -77,10 +77,10 @@ cd /scratch2/f0080vw/IDL3D/generation
 conda activate infinigen
 
 # 住宅类全部生成
-python generate.py --room-types bedroom homestudio living-room kitchen bathroom dining-room --num-scenes 4
+python generate.py --room-types bedroom homestudio livingroom kitchen bathroom diningroom --num-scenes 4
 
 # 办公/教学类全部生成
-python generate.py --room-types open-office classroom meeting-room --num-scenes 3
+python generate.py --room-types office classroom meetingroom library --num-scenes 3
 
 # 单个房型生成 改分辨率 改采样数
 python generate.py --room-type bathroom --num-scenes 5 --render 640 --sample 256
@@ -88,11 +88,11 @@ python generate.py --room-type homestudio --num-scenes 3 --start-seed 42
 
 
 # 非住宅类：可指定 --room-size；单房型、多场景若要按档混合，仍可用 --room-size-mix（仅非住宅，如 library）
-python generate.py --room-type open-office --num-scenes 4 --room-size large
+python generate.py --room-type office --num-scenes 4 --room-size large
 python generate.py --room-type classroom --num-scenes 4 --room-size medium
 python generate.py --room-type library --num-scenes 4 --room-size large
-python generate.py --room-types open-office library classroom --num-scenes 4
-python generate.py --room-type meeting-room --num-scenes 5 --render 640
+python generate.py --room-types office library classroom --num-scenes 4
+python generate.py --room-type meetingroom --num-scenes 5 --render 640
 
 # 原始场景写入 SCENES_RAW（自动生成 manifests/generation_batches.jsonl 与各房型 _scenes.csv）
 python generate.py --room-type bedroom --num-scenes 20 --scenes-raw
@@ -115,6 +115,11 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from configs.constant import (
+    LIVING_SPACE_ROOM_TYPES,
+    ROOM_TYPES,
+    WORKING_SPACE_ROOM_TYPES,
+)
 from configs.infinigen_paths import (
     INFINIGEN_IDL3D_ROOT,
     SCENES_RAW_ROOT,
@@ -168,46 +173,9 @@ def _gin_wall_thickness_override_args() -> list[str]:
     return [f"RoomConstants.global_params.wall_thickness={float(FIXED_WALL_THICKNESS_M)}"]
 
 
-# 统一入口使用的房间类型（小写 + 连字符）
-ROOM_TYPES_UNIFIED = (
-    # 住宅（6）
-    "bedroom",
-    "homestudio",
-    "living-room",
-    "kitchen",
-    "bathroom",
-    "dining-room",
-    # 办公/教学（working_space，4 类）
-    "open-office",
-    "meeting-room",
-    "classroom",
-    "library",
-)
-# 与 generate_box 一致：非住宅类可选档位；住宅类由 generate_box 内部随机/固定（不在此选档）
-# auto 仅 generate.py 使用：working_space 四类不向 generate_box 传 --room-size，由其每场景三档各 1/3 随机
+# 与 generate_lib.core 一致：非住宅类可选档位；住宅类由 core 内部随机/固定（不在此选档）
+# auto 仅 generate.py 使用：working_space 四类不向 core 传 --room-size，由其每场景三档各 1/3 随机
 ROOM_SIZE_PRESETS = ("small", "medium", "large", "xlarge", "auto")
-
-# 与 generation/generate_lib/generate_box.LIVING_SPACE_ROOM_TYPES 一致（住宅 6 类）
-LIVING_SPACE_ROOM_TYPES: frozenset[str] = frozenset(
-    {
-        "bedroom",
-        "homestudio",
-        "living-room",
-        "kitchen",
-        "bathroom",
-        "dining-room",
-    }
-)
-
-# 与 generation/generate_lib/generate_box.WORKING_SPACE_ROOM_TYPES 一致（working_space 4 类）
-WORKING_SPACE_ROOM_TYPES: frozenset[str] = frozenset(
-    {
-        "open-office",
-        "meeting-room",
-        "classroom",
-        "library",
-    }
-)
 
 
 def get_render_gpu() -> str:
@@ -242,11 +210,6 @@ def get_render_gpu() -> str:
         return best_idx
     except Exception:
         return "2"
-
-
-def _room_folder_name(room_type: str) -> str:
-    """与 generate_box._room_folder_name 一致：目录名用的房型段（无连字符）。"""
-    return room_type.replace("-", "")
 
 
 def _try_infinigen_git_sha() -> str | None:
@@ -323,52 +286,6 @@ def _append_jsonl_line(manifests_dir: Path, record: dict) -> None:
     batches_path = _generation_batches_jsonl_path(manifests_dir)
     with batches_path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
-
-
-def _append_scenes_raw_manifest(
-    room_type: str,
-    num_scenes: int,
-    batch_start_seed: int,
-    scene_ids: list[str],
-    argv_for_record: list[str],
-    *,
-    batch_id: str | None = None,
-    status: str = GENERATION_BATCH_STATUS_PENDING_PREPROCESS,
-) -> str:
-    """补登记：追加 generation_batches.jsonl 一行（整批已完成；num_generated == num_requested）并写 CSV。
-
-    若未指定 batch_id，则分配 {room_type}_batch_{NNN}。
-    """
-    if status not in GENERATION_BATCH_STATUSES:
-        raise ValueError(
-            f"status must be one of {sorted(GENERATION_BATCH_STATUSES)}, got {status!r}"
-        )
-    manifests_dir = _manifests_dir()
-    if batch_id is None:
-        batch_id = _next_room_batch_id(manifests_dir, room_type)
-    end_seed = batch_start_seed + num_scenes - 1
-    sha = _try_infinigen_git_sha()
-    record: dict = {
-        "batch_id": batch_id,
-        "room_type": room_type,
-        "num_requested": num_scenes,
-        "num_generated": num_scenes,
-        "start_seed": batch_start_seed,
-        "end_seed_inclusive": end_seed,
-        "scenes_root": "SCENES_RAW",
-        "generate_argv": argv_for_record,
-        "status": status,
-    }
-    if sha:
-        record["infinigen_submodule_git_sha"] = sha
-    _append_jsonl_line(manifests_dir, record)
-    csv_path = _append_csv_rows_for_batch(manifests_dir, room_type, batch_id, scene_ids)
-    batches_path = _generation_batches_jsonl_path(manifests_dir)
-    print(
-        f"[generate.py] 已写入 RAW manifest：{batches_path.name}（{batch_id}），"
-        f"并追加 {csv_path.name}"
-    )
-    return batch_id
 
 
 def _append_scenes_raw_batch_pending_line(
@@ -474,7 +391,7 @@ def _update_scenes_raw_batch_progress(
 
 
 def _build_argv_box(args: argparse.Namespace) -> list[str]:
-    """根据统一参数构建 generate_box.py 的 argv（不含脚本路径）。"""
+    """根据统一参数构建 generate_lib/core.py 的 argv（不含脚本路径）。"""
     argv = [
         "--room-type",
         args.room_type,
@@ -521,9 +438,7 @@ def _build_argv_box(args: argparse.Namespace) -> list[str]:
 
 
 def _parse_batch(batch_str: str) -> list[tuple[str, int]]:
-    """解析 --batch 字符串，返回 [(room_type, count), ...] 列表。
-    格式：'living-room:3,kitchen:2,dining-room:4'
-    """
+    """解析 --batch 字符串，返回 [(room_type, count), ...] 列表（canonical）。"""
     result = []
     for item in batch_str.split(","):
         item = item.strip()
@@ -531,13 +446,13 @@ def _parse_batch(batch_str: str) -> list[tuple[str, int]]:
             continue
         if ":" not in item:
             raise argparse.ArgumentTypeError(
-                f"--batch 格式错误 '{item}'，应为 'room-type:count'，例如 'living-room:3'"
+                f"--batch 格式错误 '{item}'，应为 'room_type:count'，例如 'livingroom:3'"
             )
         rtype, _, count_str = item.partition(":")
         rtype = rtype.strip()
-        if rtype not in ROOM_TYPES_UNIFIED:
+        if rtype not in ROOM_TYPES:
             raise argparse.ArgumentTypeError(
-                f"未知房型 '{rtype}'，可选: {', '.join(ROOM_TYPES_UNIFIED)}"
+                f"未知房型 '{rtype}'，可选: {', '.join(ROOM_TYPES)}"
             )
         try:
             count = int(count_str.strip())
@@ -560,7 +475,7 @@ def _run_one_room_type(
     """针对单个房型运行生成，num_scenes 个场景。
 
     raw_manifest 为 True（--scenes-raw）时：若未指定 --start-seed，
-    则在本函数内生成与 generate_box 相同分布的随机起始 seed 并传入，以便写 manifest。
+    则在本函数内生成与 generate_lib.core 相同分布的随机起始 seed 并传入，以便写 manifest。
 
     --scenes-raw 下：启动时追加一条 generation_batches.jsonl（num_generated/end_seed_inclusive 均为 null），
     每成功一个场景追加 CSV 并重写该批次行，使 num_generated 与 end_seed_inclusive 与进度一致；
@@ -576,12 +491,12 @@ def _run_one_room_type(
         if args.start_seed is None:
             run_args.start_seed = None
 
-    script = GENERATE_LIB_DIR / "generate_box.py"
+    script = GENERATE_LIB_DIR / "core.py"
 
     if raw_manifest:
         assert run_args.start_seed is not None
         batch_start = int(run_args.start_seed)
-        folder = _room_folder_name(room_type)
+        folder = room_type
         argv_for_record = sys.argv.copy()
         manifests_dir = _manifests_dir()
         batch_id = _next_room_batch_id(manifests_dir, room_type)
@@ -627,7 +542,7 @@ def _run_one_room_type(
         except KeyboardInterrupt:
             print(
                 "\n[generate.py] 已中断：generation_batches.jsonl 与 CSV 已反映截至上一场景的进度；"
-                "若 num_generated < num_requested 可补跑或用手动脚本登记。\n",
+                "若 num_generated < num_requested 可补跑剩余场景，或按 manifests/README.txt 手工编辑批次记录。\n",
                 file=sys.stderr,
             )
             raise
@@ -644,7 +559,7 @@ def _run_one_room_type(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="INFINIGEN 统一入口：调用 generate_box 生成矩形单房间场景。",
+        description="INFINIGEN 统一入口：调用 generate_lib.core 生成矩形单房间场景。",
     )
 
     # ── 房型参数（三选一）────────────────────────────────────────────
@@ -653,23 +568,23 @@ def main() -> None:
         "--room-type",
         type=str,
         default=None,
-        choices=list(ROOM_TYPES_UNIFIED),
-        help="单种房型（默认 bedroom）",
+        choices=list(ROOM_TYPES),
+        help="单种房型（canonical，默认 bedroom）",
     )
     type_group.add_argument(
         "--room-types",
         nargs="+",
         metavar="ROOM_TYPE",
-        choices=list(ROOM_TYPES_UNIFIED),
+        choices=list(ROOM_TYPES),
         default=None,
-        help="多种房型，每种生成 --num-scenes 个，如 living-room kitchen dining-room",
+        help="多种房型，每种生成 --num-scenes 个",
     )
     type_group.add_argument(
         "--batch",
         type=str,
         default=None,
         metavar="'t1:n1,t2:n2,...'",
-        help="批量：每种房型指定不同数量，如 'living-room:3,kitchen:2,dining-room:4'",
+        help="批量：如 'livingroom:3,kitchen:2,diningroom:4'",
     )
     # ────────────────────────────────────────────────────────────────
 
@@ -685,7 +600,7 @@ def main() -> None:
         default="auto",
         choices=list(ROOM_SIZE_PRESETS),
         help=(
-            "房间尺寸档位（仅非住宅类；住宅类不传）。默认 **auto**：working_space 四类不向 generate_box 传档，"
+            "房间尺寸档位（仅非住宅类；住宅类不传）。默认 **auto**：working_space 四类不向 core 传档，"
             "由其在**每个场景** small/medium/large 间各 1/3 随机（整批非同一档）。"
             "显式指定 small/medium/large/xlarge 时该房型下所有场景固定为该档。"
         ),
@@ -759,7 +674,7 @@ def main() -> None:
         help=(
             f"批量场景写入 {SCENES_RAW_ROOT}：{GENERATION_BATCHES_JSONL} 先追加一条批次"
             f"（num_generated/end_seed=null），每成一景更新该行并追加 CSV；"
-            f"中断时 num_generated < num_requested。补登记：register_scenes_raw_manifest.py。"
+            f"中断时 num_generated < num_requested（可补跑或按 manifests/README.txt 手工维护）。"
             f"不加此开关则默认 {SCENES_SKETCH_ROOT}"
         ),
     )

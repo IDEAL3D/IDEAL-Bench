@@ -8,7 +8,7 @@
 | [LIVING_SPACE_RESIDENTIAL_DESIGN.md](./LIVING_SPACE_RESIDENTIAL_DESIGN.md) | `living_space.py`：住宅六类（bedroom、homestudio、living-room、kitchen、bathroom、dining-room） |
 | [WORKING_SPACE_DESIGN.md](./WORKING_SPACE_DESIGN.md) | `working_space.py`：open-office、meeting-room、classroom、library |
 
-**说明（generation 入口范围）**：`generate.py` / `generate_box.py` **仅支持 10 种** `room-type`（上表所列），**只使用** `living_space` 与 `working_space` 两套约束模块；**不包含**商业空间等其它房型入口。
+**说明（generation 入口范围）**：`generate.py` / `generate_lib.core` **仅支持 10 种** `room-type`（上表所列），**只使用** `living_space` 与 `working_space` 两套约束模块；**不包含**商业空间等其它房型入口。
 
 ---
 
@@ -45,7 +45,7 @@ configs_indoor/
 
 ## 3. 空间类型与约束模块映射
 
-`generation/generate_lib/generate_box.py` 中 `ROOM_CONFIG_MAP` 定义房间类型与约束文件的对应关系：
+`generation/generate_lib/core.py` 中 `ROOM_CONFIG_MAP` 定义房间类型与约束文件的对应关系：
 
 | 房间类型 `room-type` | 约束模块 |
 |----------------------|----------|
@@ -65,14 +65,14 @@ configs_indoor/
 \texttt{room\_area} = \frac{\texttt{min\_w}+\texttt{max\_w}}{2} \times \frac{\texttt{min\_d}+\texttt{max\_d}}{2}
 \]
 
-其中 `(min_w, max_w, min_d, max_d)` 通常来自 gin 的 **`size_override`**（由 `generate_box.py` 按房型与档位写入）；未覆盖时使用各模块 `ROOM_SIZE_PRESETS` 中该房型的默认范围。  
+其中 `(min_w, max_w, min_d, max_d)` 通常来自 gin 的 **`size_override`**（由 `core.py` 按房型与档位写入）；未覆盖时使用各模块 `ROOM_SIZE_PRESETS` 中该房型的默认范围。  
 `floor_plan` 内可能对宽高做随机与网格取整，个别场景会在阈值附近波动。
 
 **各房型的 `(min_w, max_w, min_d, max_d)` 档位表**见分册（与源码 `ROOM_SIZE_TIERS` 保持一致）。
 
-### 4.1 墙厚与净空高度（`generate_box.py` → `RoomConstants.global_params`）
+### 4.1 墙厚与净空高度（`core.py` → `RoomConstants.global_params`）
 
-单房间经 `generation/generate_lib/generate_box.py` 调用 `infinigen_examples.single` 时，除写入 **`size_override`**（平面 footprint）外，还会按**当前场景的档位名 `size_name`** 注入墙体参数（与约束模块是 `living_space` 还是 `working_space` **无关**，凡走 `generate_box` 即生效）：
+单房间经 `generation/generate_lib/core.py` 调用 `infinigen_examples.single` 时，除写入 **`size_override`**（平面 footprint）外，还会按**当前场景的档位名 `size_name`** 注入墙体参数（与约束模块是 `living_space` 还是 `working_space` **无关**，凡走单房间 `core` 即生效）：
 
 | 注入项 | 源码常量 | 说明 |
 |--------|-----------|------|
@@ -158,7 +158,7 @@ configs_indoor/
 ### 6.3 渲染曝光与天空光（`base_indoors.gin`）
 
 - **`configure_render_cycles.exposure = 3`** → film_exposure 约 **2³ = 8** 倍亮度。  
-- 其它：`denoise = False`，`adaptive_threshold = 0.005`；采样数由 `generate_box.py` 的 `--render-samples` 控制（默认 128）。  
+- 其它：`denoise = False`，`adaptive_threshold = 0.005`；采样数由 `core.py` 的 `--render-samples` 控制（默认 128）。  
 - **输出分辨率**：`base.gin` 默认为 **1280×720**（`execute_tasks.generate_resolution` 与 `get_sensor_coords`）。`generate.py` 可用 **`--render 640`** 覆盖为 **640×360**（仍写入同一 gin 键）。  
 - **天空光**：`nishita_lighting.strength = 0.25`；`nishita_lighting.sun_elevation = ("clip_gaussian", 40, 25, 6, 70)`。
 
@@ -166,7 +166,7 @@ configs_indoor/
 
 ## 7. 相机
 
-单房间（`generate_box.py`）与完整公寓（`generate_all.py`）共用下列逻辑；参数由 `base_indoors.gin` 与 `core/placement/camera.py` 控制。（`generate_irregular` 已弃用，见 Infinigen 侧 `DEPRECATED/` 与 `LIMITATION.md`。）
+单房间（`core.py`）与完整公寓（`generate_all.py`）共用下列逻辑；参数由 `base_indoors.gin` 与 `core/placement/camera.py` 控制。（`generate_irregular` 已弃用，见 Infinigen 侧 `DEPRECATED/` 与 `LIMITATION.md`。）
 
 ### 7.1 位置
 
@@ -226,7 +226,7 @@ compose_single_room.terrain_enabled = False
 compose_single_room.solve_small_enabled = False
 ```
 
-与 `generate_box.py` 一致时常设 **`solve_small_enabled=False`**（不解算桌面小物件）。
+与 `core.py` 一致时常设 **`solve_small_enabled=False`**（不解算桌面小物件）。
 
 ---
 
@@ -253,7 +253,7 @@ compose_single_room.solve_small_enabled = False
 
 | 内容 | 位置 |
 |------|------|
-| 房间类型与档位、`size_override`、墙厚/净空高 | `generation/generate_lib/generate_box.py` → `ROOM_SIZE_TIERS`、`ROOM_CONFIG_MAP`、`WALL_HEIGHT_UNIFORM_BY_TIER`、`FIXED_WALL_THICKNESS_M` |
+| 房间类型与档位、`size_override`、墙厚/净空高 | `generation/generate_lib/core.py` → `ROOM_SIZE_TIERS`、`ROOM_CONFIG_MAP`、`WALL_HEIGHT_UNIFORM_BY_TIER`、`FIXED_WALL_THICKNESS_M` |
 | 共享约束与顶灯 | `infinigen_examples/constraints/living_space.py` → `_shared_constraints`、`_lighting_constraints` |
 | 语义标签 | `infinigen_examples/constraints/semantics.py` |
 | 材质分配 | `infinigen/assets/composition/material_assignments.py` |
@@ -264,6 +264,6 @@ compose_single_room.solve_small_enabled = False
 
 | 目录 | 用途 |
 |------|------|
-| **`SCENES_SKETCH/`** | 默认输出父目录（`generate_box` / 不带 `--scenes-raw` 的 `generate.py`）：**临时试跑、调参、改场景结果**，非正式数据集。 |
+| **`SCENES_SKETCH/`** | 默认输出父目录（`core` / 不带 `--scenes-raw` 的 `generate.py`）：**临时试跑、调参、改场景结果**，非正式数据集。 |
 | **`SCENES_RAW/`** | 原始批量生成（`generate.py --scenes-raw`），含 `manifests/`：`generation_batches.jsonl`（批次元数据，含 `status`: `pending_preprocess` / `archived` / `deleted`）与 `{room_type}_scenes.csv`（列：`batch_scene_index`, `batch_id`, `scene_id`）；供预处理与下游数据集使用。 |
 | **`SCENES_PROCESSED/`** | 正式预处理输出（`preprocess.py --final`：从 RAW 拷贝本批再跑预处理）；`manifests/` 见该目录下 `README.txt`。与上两者同级。 |

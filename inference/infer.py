@@ -4,8 +4,14 @@ import csv
 import json
 import os
 import shutil
+import sys
 import tempfile
 import time
+
+_PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT not in sys.path:
+    sys.path.insert(0, _PROJECT)
+from configs.constant import ROOM_TYPES  # noqa: E402
 
 """
 infer.py — 业务逻辑（只做推理入口，不做评测）
@@ -34,18 +40,8 @@ DEFAULT_SCENES_ROOT = os.path.join(PROJECT_DIR, "data", "scenes2test")
 SCENE_IMAGE_NAME = "image.png"
 INFO_JSON_NAME = "info.json"
 
-# 与 scenes2test 下场景目录名前缀一致（room.type 封闭词表）
-ALLOWED_ROOM_TYPES = (
-    "bathroom",
-    "bedroom",
-    "classroom",
-    "diningroom",
-    "homestudio",
-    "kitchen",
-    "library",
-    "livingroom",
-    "openoffice",
-)
+# 与生成管线 canonical 一致（`configs/constant.py` `ROOM_TYPES`）
+ALLOWED_ROOM_TYPES = tuple(ROOM_TYPES)
 
 PROTOCOL_PROMPT_FILES = {
     "floor": "system_prompt_floor.md",

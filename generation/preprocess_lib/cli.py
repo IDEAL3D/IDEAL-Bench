@@ -1,4 +1,4 @@
-"""argparse 与分支调度：调用 ``orchestrator`` / ``pipeline``。"""
+"""argparse 与分支调度：调用 ``core`` / ``pipeline``。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from .defaults import DEFAULT_LOG_FILENAME, GT_JSON_NAME
-from .orchestrator import (
+from .core import (
     _append_preprocess_batches_jsonl,
     _append_preprocess_log_block,
     _assert_raw_scenes_ready_for_final,

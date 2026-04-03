@@ -1,7 +1,7 @@
 """
 单场景 Blender 内管线：``GT.json``、``info.json``、PNG / npz 清理。
 
-仅在带 ``bpy`` 的子进程中运行（由 ``orchestrator`` 启动 ``preprocess.py --blend`` 触发）。
+仅在带 ``bpy`` 的子进程中运行（由 ``core`` 启动 ``preprocess.py --blend`` 触发）。
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import sys
 from typing import Any, Dict, Optional
 
 from .defaults import CANONICAL_RENDER_PNG, PUBLISH_RENDER_PNG
-from .orchestrator import _generation_dir, _list_png_files_in_scene_dir
+from .core import _generation_dir, _list_png_files_in_scene_dir
 
 
 def _scene_output_dir(blend_path: str) -> str:

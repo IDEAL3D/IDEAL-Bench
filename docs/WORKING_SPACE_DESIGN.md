@@ -9,7 +9,7 @@
 
 本节收录**架构约定、房型定义、尺寸档位、管线与资产表**等与设计相关的说明（「应当是什么样」）。
 
-**约定**：与 `generate_box.py` 一致时通常设 `solve_small_enabled=False`，不解算桌面小物件。
+**约定**：与 `core.py` 一致时通常设 `solve_small_enabled=False`，不解算桌面小物件。
 
 ## 一、模块与 GIN
 
@@ -47,9 +47,9 @@ configs_indoor/working_space.gin
 
 ---
 
-## 二、`generate_box.py` 面积档位总览
+## 二、`core.py` 面积档位总览
 
-下列 `(min_w, max_w, min_d, max_d)` 单位：**米**，与 `generation/generate_lib/generate_box.py` → `ROOM_SIZE_TIERS` 一致。未列房型见该文件或 `_DEFAULT_SIZE_TIERS`。
+下列 `(min_w, max_w, min_d, max_d)` 单位：**米**，与 `generation/generate_lib/core.py` → `ROOM_SIZE_TIERS` 一致。未列房型见该文件或 `_DEFAULT_SIZE_TIERS`。
 
 ### 2.1 开放办公室 `open-office`
 
@@ -81,7 +81,7 @@ Gin 未覆盖时的总边界：`ROOM_SIZE_PRESETS[OpenOffice]` 常为 **(3.0, 8.
 
 ### 2.4 图书馆 `library`
 
-共 **三档**（`generate_box.py` → `ROOM_SIZE_TIERS["library"]`）。未在命令行指定 `--room-size` 时，`generate_box.py` 在每个场景 **small / medium / large 间各 1/3** 随机；`generate.py` 可对 library 使用 `--room-size auto` 达到同样效果。
+共 **三档**（`core.py` → `ROOM_SIZE_TIERS["library"]`）。未在命令行指定 `--room-size` 时，`core.py` 在每个场景 **small / medium / large 间各 1/3** 随机；`generate.py` 可对 library 使用 `--room-size auto` 达到同样效果。
 
 | 档位 | 性质 | `(min_w, max_w, min_d, max_d)`（m） | 典型面积量级 | `library_block` 数（目标） | 单个 `library_block` 竖向格层数 |
 |------|------|-------------------------------------|----------------|---------------------------|--------------------------------|
@@ -119,11 +119,11 @@ Gin 未覆盖时的总边界：`ROOM_SIZE_PRESETS[OpenOffice]` 常为 **(3.0, 8.
 
 | 面积档（`shared["room_area"]`） | 扶手椅件数（闭区间） |
 |-------------------------------|----------------------|
-| **&lt; 16 m²**（对应 `generate_box` **small** 档边界均值） | **0**（必须 0） |
+| **&lt; 16 m²**（对应 `core` **small** 档边界均值） | **0**（必须 0） |
 | **16 ≤ area &lt; 36 m²**（**medium**） | **0–1** |
 | **≥ 36 m²**（**large**） | **0–2** |
 
-- **`room_area` 含义**：与第二层书架 / 盆栽 / 落地灯相同，为 **`size_override` 四元组 `(min_w,max_w,min_d,max_d)` 的边界均值** 所算面积 \(\frac{w_\mathrm{min}+w_\mathrm{max}}{2}\times\frac{d_\mathrm{min}+d_\mathrm{max}}{2}\)，**不是** `floor_plan` 一次采样得到的真实 `w×d`。因此档位与 `generate_box` 传入的 small/medium/large 边界一致。
+- **`room_area` 含义**：与第二层书架 / 盆栽 / 落地灯相同，为 **`size_override` 四元组 `(min_w,max_w,min_d,max_d)` 的边界均值** 所算面积 \(\frac{w_\mathrm{min}+w_\mathrm{max}}{2}\times\frac{d_\mathrm{min}+d_\mathrm{max}}{2}\)，**不是** `floor_plan` 一次采样得到的真实 `w×d`。因此档位与 `core` 传入的 small/medium/large 边界一致。
 - **软目标**：当上限 **&gt; 0** 时，`open_office_armchairs` 鼓励多摆扶手椅，并使其与**地面工位**（`SimpleDeskFactory`）保持一定间距，减轻堵在工位旁。
 
 **管线**：

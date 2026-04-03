@@ -1,6 +1,6 @@
 # 预处理设计（Box 单房）：`GT.json` 与 `info.json`
 
-实现入口：`generation/preprocess.py` → `preprocess_lib/extract_gt.py`（GT）、`preprocess_lib/extract_info.py`（组装并写出 `info.json`，镜头块来自 `extract_camview`）；调度见 `preprocess_lib/cli`、`preprocess_lib/orchestrator`、`preprocess_lib/pipeline`。GT 字段形状见 `single_scene_schema.json`（若存在）。
+实现入口：`generation/preprocess.py` → `preprocess_lib/extract_gt.py`（GT）、`preprocess_lib/extract_info.py`（组装并写出 `info.json`，镜头块来自 `extract_camview`）；调度见 `preprocess_lib/cli`、`preprocess_lib/core`、`preprocess_lib/pipeline`。GT 字段形状见 `single_scene_schema.json`（若存在）。
 
 **不写 GLB 导出管线**。`GT.json` / `info.json` 顶层仅保留 **`scene_id`**（与场景目录名一致）及数据本体；**无** `schema_version`、`coordinate_frame` / `coordinate_summary`、`geometric_rules_ref`。字段语义与历史版本（曾用世界轴 `dimensions`、曾写冗长 `coordinate_frame`）见 **`geometric_rules_floor.md`** 与下文；当前 **`objects[].dimensions` 为根局部合并 AABB**。
 

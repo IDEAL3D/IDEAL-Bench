@@ -14,9 +14,9 @@
 
 ---
 
-## 1. `generate_box.py` 中的住宅尺寸档位
+## 1. `core.py` 中的住宅尺寸档位
 
-住宅六类房型在 `ROOM_SIZE_TIERS` 中的定义与 **`generation/generate_lib/generate_box.py`** 源码一致。档位由脚本内部解析（**不出现在输出目录名**）：
+住宅六类房型在 `ROOM_SIZE_TIERS` 中的定义与 **`generation/generate_lib/core.py`** 源码一致。档位由脚本内部解析（**不出现在输出目录名**）：
 
 | 行为 | 说明 |
 |------|------|
@@ -64,13 +64,13 @@
 - **`≥ 36 m²`**：`BedFactory`；靠墙沙发 1–2、独立沙发 0–1、电视柜 0–1、边几 1–2 等。  
 - **所有档**：`bedroom_nightstand` score（weight=10）鼓励床头柜贴床侧 ≤ 0.15 m；储物柜上 `OfficeShelfItem` **≥ 0**（弱约束）。
 
-> **`homestudio`** 房型在 `generate_box` 中固定大平面，使 `room_area` 落入 **≥ 36** 档，从而启用上表第三行规则。
+> **`homestudio`** 房型在 `core` 中固定大平面，使 `room_area` 落入 **≥ 36** 档，从而启用上表第三行规则。
 
 ---
 
 ## 4. 客厅（`Semantics.LivingRoom`）
 
-### 4.1 书桌 / 转椅（`living_space.py` + `generate_box`）
+### 4.1 书桌 / 转椅（`living_space.py` + `core`）
 
 | `room_area` | 书桌 | 转椅 |
 |-------------|------|------|
@@ -99,7 +99,7 @@
 
 ## 5. 厨房（`Semantics.Kitchen`）
 
-> **约束文件**：`home.py`（`generate_irregular.py`）；`living_space.py`（`generate_box.py`）。两文件数值应保持一致（维护约定见下 **[关键改动](#关键改动)**）。
+> **约束文件**：`home.py`（`generate_irregular.py`）；`living_space.py`（`core.py`）。两文件数值应保持一致（维护约定见下 **[关键改动](#关键改动)**）。
 
 | 项目 | 数量 / 条件 |
 |------|-------------|
@@ -122,7 +122,7 @@
 |------|-------------|
 | **餐桌** | **恰好 1** |
 | **餐椅**（`front_against` 餐桌） | **2–8**（可靠墙） |
-| **落地储物（靠墙）** | **1–3**（`generate_box` 路径下 Storage 候选为 **CellShelf + SingleCabinet**，已去掉书柜） |
+| **落地储物（靠墙）** | **1–3**（`core` 路径下 Storage 候选为 **CellShelf + SingleCabinet**，已去掉书柜） |
 | **大盆栽** | **0–3**（饭厅优先于全局 0–1） |
 | **落地灯** | **`home.py` 不规则公寓**：0–3（score weight=2）；**`living_space.py` 单间**无此项 |
 | **地毯** | **0–1**（score `maximize` weight=**3**） |
@@ -158,7 +158,7 @@
 
 | 管线 | 脚本 | 约束文件 | 适用房间 |
 |------|------|----------|----------|
-| 矩形单间 | `generate_box.py` | `living_space.py` | 住宅六类 + homestudio |
+| 矩形单间 | `core.py` | `living_space.py` | 住宅六类 + homestudio |
 | 不规则公寓 | `generate_irregular.py` | **`home.py`** | LivingRoom / DiningRoom / Kitchen（推荐）；Bedroom / Bathroom（可用） |
 
 - **地毯**：单房上限、厨房/浴室零地毯 **在 `living_space.py`（box 管线）** 中实现；`home.py` 以该文件为准。  
@@ -170,7 +170,7 @@
 
 | 内容 | 文件与位置 |
 |------|------------|
-| 住宅档位与 `size_override` | `generation/generate_lib/generate_box.py` → `ROOM_SIZE_TIERS`、`resolve_living_space_tier` |
+| 住宅档位与 `size_override` | `generation/generate_lib/core.py` → `ROOM_SIZE_TIERS`、`resolve_living_space_tier` |
 | 分房间约束 | `_bedroom_constraints`, `_livingroom_constraints`, `_kitchen_constraints`, `_bathroom_constraints`, `_diningroom_constraints` |
 | 单人床工厂 | `infinigen/assets/objects/seating/bed.py` → `SingleBedFactory` |
 
@@ -182,7 +182,7 @@
 
 ## 管线与共存
 
-- **`generate_box.py` + `living_space.py`**：矩形单间、地毯上限与厨房/浴室零地毯等 **仅在此路径完整实现**；文档 **[设计原则](#设计原则)** 中的表格默认指该路径。
+- **`core.py` + `living_space.py`**：矩形单间、地毯上限与厨房/浴室零地毯等 **仅在此路径完整实现**；文档 **[设计原则](#设计原则)** 中的表格默认指该路径。
 - **`home.py`**：不规则多房间公寓；与 `living_space.py` 中厨房 / 饭厅 / 客厅等 **数值应对齐**，否则同一语义在两套管线会不一致。
 
 ## 洗手间（镜子）
@@ -214,5 +214,5 @@
 
 ## 其它
 
-- **`Semantics.HomeStudio`**：大平层卧室档，语义与 `Semantics.Bedroom` 区分，由 `generate_box` 的 `room-type` 与 `ROOM_SIZE_TIERS["homestudio"]` 固定大平面触发 ≥36 m² 家具规则。
+- **`Semantics.HomeStudio`**：大平层卧室档，语义与 `Semantics.Bedroom` 区分，由 `core` 的 `room-type` 与 `ROOM_SIZE_TIERS["homestudio"]` 固定大平面触发 ≥36 m² 家具规则。
 - 约束域若使用 **`cl.union`** 等组合，需确认 **`constraint_domain` / `check_all`** 是否支持（不支持时需改写为 `excludes` 等等价形式）。
