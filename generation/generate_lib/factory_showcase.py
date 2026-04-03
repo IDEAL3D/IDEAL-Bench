@@ -7,7 +7,7 @@
 **运行方式与 ``generation/generate.py`` / ``generate_box.py`` 相同**：在已配置 Infinigen 的 conda 环境里直接::
 
     cd /path/to/IDL3D/generation
-    python factory_showcase.py
+    python generate_lib/factory_showcase.py
 
 底层与 ``python -m infinigen_examples.single`` 一样，需要 **当前解释器能 ``import bpy``**（你的 ``(infinigen)`` 环境若已能跑 ``generate.py``，即可同样跑本脚本）。本脚本不会单独调用 ``blender`` 可执行文件。
 
@@ -41,7 +41,11 @@ import sys
 import traceback
 from pathlib import Path
 
-from infinigen_paths import INFINIGEN_IDL3D_ROOT, SCENES_SKETCH_ROOT
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from configs.infinigen_paths import INFINIGEN_IDL3D_ROOT, SCENES_SKETCH_ROOT
 
 # -----------------------------------------------------------------------------
 # 包路径：IDL3D/infinigen-idl3d 为 Python 包根（与 generate_box 子进程 cwd 一致）

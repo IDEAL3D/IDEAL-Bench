@@ -5,7 +5,7 @@
 
 用法（在 IDL3D 仓库根目录或 generation/ 下均可，脚本会定位仓库根）:
 
-  python generation/register_scenes_raw_manifest.py \\
+  python generation/generate_lib/register_scenes_raw_manifest.py \\
     --room-type meeting-room --start-seed 1124442331 --count 5
 
 会先检查 INFINIGEN/SCENES_RAW/<房型前缀>_s<seed>/ 是否存在；缺目录则报错退出。
@@ -17,12 +17,14 @@ import argparse
 import sys
 from pathlib import Path
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-if str(SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPT_DIR))
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_GENERATION_DIR = Path(__file__).resolve().parents[1]
+for _p in (_REPO_ROOT, _GENERATION_DIR):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
 import generate as gen  # noqa: E402
-from infinigen_paths import SCENES_RAW_ROOT  # noqa: E402
+from configs.infinigen_paths import SCENES_RAW_ROOT  # noqa: E402
 
 
 def main() -> None:

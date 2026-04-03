@@ -5,7 +5,8 @@
 用法::
     blender -b /path/to/scene.blend --python blender_dump_metadata.py -- /path/to/camera_fragment.json
 
-写出为 JSON 对象，仅含键：resolution, camera_location, camera_rotation_euler, focal_length_mm, sensor_width
+写出为 JSON：resolution, camera_location, camera_rotation_euler, focal_length_mm, sensor_width,
+rotation_unit (radians), rotation_order (XYZ)。camera_rotation_euler 与 rotation_order 一致。
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ def main() -> None:
         raise RuntimeError("No active camera in scene")
 
     loc, rot_quat, _scale = cam.matrix_world.decompose()
-    euler = rot_quat.to_euler()
+    euler = rot_quat.to_euler("XYZ")
     fragment = {
         "resolution": [
             int(bpy.context.scene.render.resolution_x),
@@ -45,6 +46,8 @@ def main() -> None:
         "camera_rotation_euler": [float(euler.x), float(euler.y), float(euler.z)],
         "focal_length_mm": float(cam.data.lens),
         "sensor_width": float(cam.data.sensor_width),
+        "rotation_unit": "radians",
+        "rotation_order": "XYZ",
     }
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(fragment, indent=2), encoding="utf-8")

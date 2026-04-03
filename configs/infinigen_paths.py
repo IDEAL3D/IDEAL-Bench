@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-# IDL3D 仓库根（generation/ 的父目录）
+# IDL3D 仓库根（configs/ 的父目录）
 REPO_ROOT: Path = Path(__file__).resolve().parents[1]
 
 # 与 IDL3D 同级的 INFINIGEN 仓库根：场景输出 SCENES_SKETCH / SCENES_RAW 放在此树下（非 IDL3D 内）

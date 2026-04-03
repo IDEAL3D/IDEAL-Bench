@@ -7,7 +7,7 @@
 示例::
 
     cd /path/to/IDL3D/generation
-    python finalize_existing_scene.py /path/to/INFINIGEN/SCENES_SKETCH/classroom_s717851252
+    python generate_lib/finalize_existing_scene.py /path/to/INFINIGEN/SCENES_SKETCH/classroom_s717851252
 
 目录名须为 ``{roomtype}_s{seed}``（与 generate_box 一致）；``object_index_map`` 若存在
 ``.gt_object_index_pass/Objects*.json`` 则从其中读取，否则为 ``{}``。
@@ -22,14 +22,16 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-# 与 generate_box 同目录
-SCRIPT_DIR = Path(__file__).resolve().parent
-if str(SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPT_DIR))
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_GEN_LIB = Path(__file__).resolve().parent
+for _p in (_REPO_ROOT, _GEN_LIB):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
 from generate_box import (  # noqa: E402
     _delete_all_except_final_four,
     _object_index_map_from_objects_json,
+    build_instance_map_block,
     resolve_render_metadata,
 )
 
@@ -89,11 +91,7 @@ def main() -> None:
         "scene_id": scene_dir.name,
         "room_type": room_type,
         "render": render_meta,
-        "instance_map": {
-            "format": "grayscale_uint8",
-            "background_value": 0,
-            "object_index_map": index_map,
-        },
+        "instance_map": build_instance_map_block(index_map),
     }
     (scene_dir / "metadata.json").write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2),

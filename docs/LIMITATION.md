@@ -9,7 +9,7 @@
 
 ## 房间几何：仅使用 box 矩形单房
 
-- **默认且唯一推荐的生成入口**：`generate.py` → `generate_box.py`。房间地面 footprint 为轴对齐矩形，**在 XY 上以 Blender 世界原点为中心**，边长为 \(w \times d\)（米），与 `living_space.floor_plan` / `working_space` 中 `shapely.box(-w/2,-d/2,w/2,d/2)` 一致。
+- **默认且唯一推荐的生成入口**：`generation/generate.py` → `generation/generate_lib/generate_box.py`。房间地面 footprint 为轴对齐矩形，**在 XY 上以 Blender 世界原点为中心**，边长为 \(w \times d\)（米），与 `living_space.floor_plan` / `working_space` 中 `shapely.box(-w/2,-d/2,w/2,d/2)` 一致。
 - **不规则房间（irregular）已弃用**：旧脚本路径曾为 Infinigen `MYSCRIPTS/DEPRECATED/generate_irregular.py`（未迁入本仓库 `generation/`）。该管线**不可控**：易出现不合常理的平面形状、网格破损、大量无法布置家具的碎区；本数据集**不再扩展** irregular 场景，论文中请只报告 box 子集。
 
 

@@ -17,7 +17,7 @@
 
 **Infinigen 锁文件里有什么**：[`infinigen-idl3d/requirements.txt`](infinigen-idl3d/requirements.txt) 与上游管线一致，含 **`bpy`**、**`gin-config`**、**`numpy`**、**`opencv-python`**、**`trimesh`**、**`imageio`**、**`scipy`**、**`matplotlib`**、**`scikit-image`**、**`Pillow`**、**`OpenEXR`**、**`usd-core`** 等；并可能有 **`infinigen_internal`**、**`robosuite`** 等 **git+ssh** 可编辑依赖，无权限时需按团队 fork / 镜像改锁文件后再 `pip`。
 
-生成入口在 **`generation/`**；子进程在 **`infinigen-idl3d/`** 下以 **`python -m infinigen_examples.single`** 等方式启动，见 `generate_box.py`。路径常量见 [`generation/infinigen_paths.py`](generation/infinigen_paths.py)。
+生成入口在 **`generation/generate.py`**；后端在 **`generation/generate_lib/`**（如 `generate_box.py`）；子进程在 **`infinigen-idl3d/`** 下以 **`python -m infinigen_examples.single`** 等方式启动。路径常量见 [`configs/infinigen_paths.py`](configs/infinigen_paths.py)。
 
 **`bpy` 版本**：建议与 `.blend` 主版本一致（锁文件示例 **4.2.x**）；推理、重建与生成宜共用同一 minor 版本。
 

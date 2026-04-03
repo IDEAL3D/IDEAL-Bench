@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-REPO_ROOT = SCRIPT_DIR.parent
+REPO_ROOT = SCRIPT_DIR.parents[1]
 DEFAULT_PROCESSED = REPO_ROOT / "SCENES_PROCESSED"
 DEFAULT_SCENES_V1 = REPO_ROOT / "data" / "scenes_v1"
 

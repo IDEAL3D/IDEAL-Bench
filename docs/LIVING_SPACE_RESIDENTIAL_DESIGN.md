@@ -16,7 +16,7 @@
 
 ## 1. `generate_box.py` 中的住宅尺寸档位
 
-住宅六类房型在 `ROOM_SIZE_TIERS` 中的定义与 **`generation/generate_box.py`** 源码一致。档位由脚本内部解析（**不出现在输出目录名**）：
+住宅六类房型在 `ROOM_SIZE_TIERS` 中的定义与 **`generation/generate_lib/generate_box.py`** 源码一致。档位由脚本内部解析（**不出现在输出目录名**）：
 
 | 行为 | 说明 |
 |------|------|
@@ -170,7 +170,7 @@
 
 | 内容 | 文件与位置 |
 |------|------------|
-| 住宅档位与 `size_override` | `generation/generate_box.py` → `ROOM_SIZE_TIERS`、`resolve_living_space_tier` |
+| 住宅档位与 `size_override` | `generation/generate_lib/generate_box.py` → `ROOM_SIZE_TIERS`、`resolve_living_space_tier` |
 | 分房间约束 | `_bedroom_constraints`, `_livingroom_constraints`, `_kitchen_constraints`, `_bathroom_constraints`, `_diningroom_constraints` |
 | 单人床工厂 | `infinigen/assets/objects/seating/bed.py` → `SingleBedFactory` |
 

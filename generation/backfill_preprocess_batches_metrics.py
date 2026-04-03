@@ -23,9 +23,11 @@ import os
 import sys
 from pathlib import Path
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-if str(SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPT_DIR))
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_GENERATION_DIR = Path(__file__).resolve().parent
+for _p in (_REPO_ROOT, _GENERATION_DIR):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
 from preprocess_lib import orchestrator as p  # noqa: E402
 

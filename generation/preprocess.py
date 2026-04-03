@@ -12,6 +12,13 @@ Box 单房间预处理 CLI 入口。共享常量见 ``preprocess_lib.defaults``�
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+_GENERATION_DIR = Path(__file__).resolve().parent
+if str(_GENERATION_DIR) not in sys.path:
+    sys.path.insert(0, str(_GENERATION_DIR))
+
 from preprocess_lib.cli import main
 
 if __name__ == "__main__":

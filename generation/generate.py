@@ -2,7 +2,7 @@
 """
 INFINIGEN 统一生成与渲染入口。
 
-仅调用 ``generate_box.py``（矩形单房间；地板 XY 以世界原点为中心，见 ``../docs/LIMITATION.md``）。
+仅调用 ``generate_lib/generate_box.py``（矩形单房间；地板 XY 以世界原点为中心，见 ``../docs/LIMITATION.md``）。
 不规则房间管线已弃用，说明见 ``../docs/LIMITATION.md``。
 **房型**：living_space 6 类 + working_space 4 类，共 **10** 种（不含商业空间）。
 
@@ -51,7 +51,7 @@ INFINIGEN 统一生成与渲染入口。
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 常用参数速查
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  单场景输出（由 generate_box 收尾）：``scene.blend``、``color.png``、``instance_segmentation.png``、``metadata.json``（含相机与 object_index 映射）。
+  单场景输出（由 generate_box 收尾）：``scene.blend``、``color.png``、``instance_segmentation.png``（uint16 灰度）、``metadata.json``（含相机与 object_index 映射）。
 
   脚本顶部 FIXED_WALL_THICKNESS_M       默认 0.25（米），固定墙厚/地板挤出；设为 None 恢复随机
   --room-type <type>                  单种房型（默认 bedroom）
@@ -111,13 +111,18 @@ import subprocess
 import sys
 from pathlib import Path
 
-from infinigen_paths import (
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from configs.infinigen_paths import (
     INFINIGEN_IDL3D_ROOT,
     SCENES_RAW_ROOT,
     SCENES_SKETCH_ROOT,
 )
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+GENERATE_LIB_DIR = SCRIPT_DIR / "generate_lib"
 
 # SCENES_RAW/manifests：生成批次登记（与 preprocess 的 preprocess_batches.jsonl 区分）
 GENERATION_BATCHES_JSONL = "generation_batches.jsonl"
@@ -182,7 +187,7 @@ ROOM_TYPES_UNIFIED = (
 # auto 仅 generate.py 使用：working_space 四类不向 generate_box 传 --room-size，由其每场景三档各 1/3 随机
 ROOM_SIZE_PRESETS = ("small", "medium", "large", "xlarge", "auto")
 
-# 与 generation/generate_box.LIVING_SPACE_ROOM_TYPES 一致（住宅 6 类）
+# 与 generation/generate_lib/generate_box.LIVING_SPACE_ROOM_TYPES 一致（住宅 6 类）
 LIVING_SPACE_ROOM_TYPES: frozenset[str] = frozenset(
     {
         "bedroom",
@@ -194,7 +199,7 @@ LIVING_SPACE_ROOM_TYPES: frozenset[str] = frozenset(
     }
 )
 
-# 与 generation/generate_box.WORKING_SPACE_ROOM_TYPES 一致（working_space 4 类）
+# 与 generation/generate_lib/generate_box.WORKING_SPACE_ROOM_TYPES 一致（working_space 4 类）
 WORKING_SPACE_ROOM_TYPES: frozenset[str] = frozenset(
     {
         "open-office",
@@ -571,7 +576,7 @@ def _run_one_room_type(
         if args.start_seed is None:
             run_args.start_seed = None
 
-    script = SCRIPT_DIR / "generate_box.py"
+    script = GENERATE_LIB_DIR / "generate_box.py"
 
     if raw_manifest:
         assert run_args.start_seed is not None

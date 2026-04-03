@@ -11,7 +11,7 @@
 
 - ``scene.blend`` — Blender 源文件
 - ``color.png`` — 正常 RGB（原 ``Image_*.png``）
-- ``instance_segmentation.png`` — Object Index pass，灰度 uint8（背景为 0）
+- ``instance_segmentation.png`` — Object Index pass，**单通道 uint16** 灰度 PNG（背景为 0，与 Pass Index 一致，可至 65535）
 - ``metadata.json`` — 场景 id、房型、相机与实例索引表（object_index → 语义 id）
 
 流程：先 ``coarse``+``render`` 出 RGB；在清理前再跑一趟 ``@flat/render_image`` 仅用于 Object Index；
@@ -63,9 +63,9 @@
     10.0        非常亮            商业样板间 / 过曝风格
 
     示例:
-        python generation/generate_box.py --light-multiplier 5    # baseline，与 Infinigen 样板房一致
-        python generation/generate_box.py --light-multiplier 8    # 更亮
-        python generation/generate_box.py --light-multiplier 3    # 偏暗氛围
+        python generate_lib/generate_box.py --light-multiplier 5    # baseline，与 Infinigen 样板房一致
+        python generate_lib/generate_box.py --light-multiplier 8    # 更亮
+        python generate_lib/generate_box.py --light-multiplier 3    # 偏暗氛围
 
     也可通过 --overrides 精细控制:
         --overrides "configure_render_cycles.exposure=4"    # 提高渲染曝光（2^4=16 倍）
@@ -88,9 +88,9 @@
     8192        关      原始默认            极慢，显存需求极大
 
     示例:
-        python generation/generate_box.py                                       # 默认 128+denoise
-        python generation/generate_box.py --render-samples 256                  # 更高质量
-        python generation/generate_box.py --render-samples 512 --no-denoise     # 不去噪
+        python generate_lib/generate_box.py                                       # 默认 128+denoise
+        python generate_lib/generate_box.py --render-samples 256                  # 更高质量
+        python generate_lib/generate_box.py --render-samples 512 --no-denoise     # 不去噪
 """
 
 from __future__ import annotations
@@ -108,10 +108,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 import numpy as np
 from imageio import imwrite
 
-from infinigen_paths import INFINIGEN_IDL3D_ROOT, SCENES_SKETCH_ROOT
+from configs.infinigen_paths import INFINIGEN_IDL3D_ROOT, SCENES_SKETCH_ROOT
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -347,6 +351,45 @@ FINAL_KEEP_NAMES = frozenset(
     {"scene.blend", "color.png", "instance_segmentation.png", "metadata.json"}
 )
 
+# 与 ``camera_rotation_euler`` 三分量一致：Blender mathutils 常用 XYZ 顺序（弧度）
+RENDER_ROTATION_UNIT = "radians"
+RENDER_ROTATION_ORDER = "XYZ"
+
+
+def _attach_render_rotation_fields(render: dict) -> dict:
+    """为 ``render`` 块补充 ``rotation_unit`` / ``rotation_order``（与 ``camera_rotation_euler`` 对应）。"""
+    out = dict(render)
+    out["rotation_unit"] = RENDER_ROTATION_UNIT
+    out["rotation_order"] = RENDER_ROTATION_ORDER
+    return out
+
+
+def build_instance_map_block(object_index_map: dict[str, str]) -> dict:
+    """``metadata.instance_map`` 固定结构（含 object_index 语义说明）。"""
+    return {
+        "format": "grayscale_uint16",
+        "bits_per_channel": 16,
+        "background_value": 0,
+        "object_index_map": object_index_map,
+        "indexing": {
+            "keys_are": "blender_object_pass_index_decimal_string",
+            "keys_mean": (
+                "Cycles Object Index（Pass Index）正整数。GT 渲染前由 Infinigen "
+                "`set_pass_indices()` 为每个参与渲染的物体分配，并写入 Objects*.json 的 object_index 字段。"
+            ),
+            "values_are": "sanitized_object_name_with_ordinal",
+            "values_mean": (
+                "由 Blender 物体名派生：仅保留字母数字，其余改为下划线并小写；"
+                "同一 base 名出现多次时依次为 base_001、base_002…（按物体名字典序遍历时的次序）。"
+            ),
+            "pixels": (
+                "instance_segmentation.png 为 **16-bit 单通道灰度 PNG**：像素值等于该像素的 "
+                "Pass Index（0–65535），与 object_index_map 的键一一对应，无 uint8 模 256 碰撞问题。"
+                " 读图时请使用支持 16-bit 的接口（如 imageio/cv2.IMREAD_UNCHANGED / PIL + I;16），勿默认按 8-bit 读。"
+            ),
+        },
+    }
+
 
 def _find_blender_executable() -> str:
     """用于 ``blender -b scene.blend --python ...``（无 bpy 的宿主 Python 无法读相机）。"""
@@ -455,7 +498,7 @@ def _render_metadata_from_bpy_open(blend_path: Path) -> dict | None:
         if cam is None:
             return None
         loc, rot_quat, _sca = cam.matrix_world.decompose()
-        euler = rot_quat.to_euler()
+        euler = rot_quat.to_euler(RENDER_ROTATION_ORDER)
         return {
             "resolution": [
                 int(bpy.context.scene.render.resolution_x),
@@ -476,7 +519,7 @@ def resolve_render_metadata(blend_path: Path, output_folder: Path, args) -> dict
     meta = _render_metadata_from_bpy_open(blend_path)
     if meta is not None:
         logger.info("metadata.render：自当前进程 bpy 读取 scene.blend")
-        return meta
+        return _attach_render_rotation_fields(meta)
 
     try:
         cam_fragment = output_folder / ".camera_fragment.json"
@@ -484,7 +527,7 @@ def resolve_render_metadata(blend_path: Path, output_folder: Path, args) -> dict
         meta = json.loads(cam_fragment.read_text(encoding="utf-8"))
         cam_fragment.unlink(missing_ok=True)
         logger.info("metadata.render：独立 blender 子进程写出")
-        return meta
+        return _attach_render_rotation_fields(meta)
     except Exception as e:
         logger.warning("独立 blender 导出相机失败（可忽略若后续 npz 成功）: %s", e)
         cam_fragment = output_folder / ".camera_fragment.json"
@@ -493,16 +536,25 @@ def resolve_render_metadata(blend_path: Path, output_folder: Path, args) -> dict
     meta = _render_metadata_from_camview_npz(output_folder)
     if meta is not None:
         logger.info("metadata.render：自 camview*.npz 推算（sensor_width 按 36mm 全画幅由 K 反推 focal）")
-        return meta
+        return _attach_render_rotation_fields(meta)
 
     logger.warning(
         "metadata.render：无 bpy 且无 camview*.npz，使用占位分辨率；请检查环境或重新渲染"
     )
-    return _render_metadata_minimal_from_args(args)
+    return _attach_render_rotation_fields(_render_metadata_minimal_from_args(args))
 
 
 def _object_index_map_from_objects_json(data: dict) -> dict[str, str]:
-    """Objects*.json：物体名为键，object_index 为 Blender Object Index。"""
+    """由 Infinigen GT 输出的 ``Objects*.json`` 构造 ``object_index_map``。
+
+    - JSON **顶层键**为 Blender 物体名（``bpy.data.objects`` 的 ``name``）。
+    - 每个物体含 **object_index**：即 Cycles 渲染用的 **Pass Index**（正整数）。
+    - 输出映射：**键** = 该 Pass Index 的十进制字符串；**值** = 便于人读的标签（非 Blender 内置 ID）。
+
+    标签规则：将物体名清洗为 ``base``（小写、非字母数字→下划线）；同一 ``base`` 多次出现时
+    按 **物体名字符串排序后的遍历顺序** 编号为 ``base_001``、``base_002``…。
+    与 ``instance_segmentation.png`` 的关系：像素值 = Pass Index（uint16 PNG；0 通常为背景）。
+    """
     out: dict[str, str] = {}
     counts: dict[str, int] = {}
     for name in sorted(data.keys()):
@@ -576,17 +628,30 @@ def _rename_rgb_to_color_png(folder: Path) -> Path:
 
 
 def _write_instance_segmentation_png(npy_path: Path, out_png: Path) -> None:
+    """将 Object Index 存为 **uint16 灰度 PNG**，避免 Pass Index>255 时与 uint8 模 256 碰撞。"""
     arr = np.load(npy_path)
     if arr.ndim != 2:
         arr = arr.reshape(arr.shape[0], arr.shape[1])
-    max_v = int(arr.max()) if arr.size else 0
-    if max_v > 255:
+    arr = np.asarray(arr, dtype=np.float64)
+    max_v = float(np.nanmax(arr)) if arr.size else 0.0
+    if max_v > 65535:
         logger.warning(
-            "Object Index 最大值 %d > 255，已 clip 到 uint8；metadata 仍用完整索引字符串键",
+            "Object Index 最大值 %.0f > 65535，已 clip 到 uint16 PNG 可表示范围",
             max_v,
         )
-    u8 = np.clip(arr, 0, 255).astype(np.uint8)
-    imwrite(out_png, u8)
+    u16 = np.ascontiguousarray(np.clip(arr, 0, 65535).astype(np.uint16))
+    try:
+        from PIL import Image
+
+        Image.fromarray(u16, mode="I;16").save(out_png)
+    except Exception as e:
+        logger.debug("PIL I;16 写 PNG 失败，尝试 imageio: %s", e)
+        try:
+            imwrite(out_png, u16)
+        except Exception as e2:
+            raise RuntimeError(
+                "无法写入 16-bit instance_segmentation.png（请安装 Pillow 或可用的 imageio PNG）"
+            ) from e2
 
 
 def _finalize_scene_outputs(
@@ -638,11 +703,7 @@ def _finalize_scene_outputs(
         "scene_id": scene_id,
         "room_type": room_type,
         "render": render_meta,
-        "instance_map": {
-            "format": "grayscale_uint8",
-            "background_value": 0,
-            "object_index_map": index_map,
-        },
+        "instance_map": build_instance_map_block(index_map),
     }
     (output_folder / "metadata.json").write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2),

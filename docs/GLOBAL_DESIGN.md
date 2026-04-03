@@ -45,7 +45,7 @@ configs_indoor/
 
 ## 3. 空间类型与约束模块映射
 
-`generation/generate_box.py` 中 `ROOM_CONFIG_MAP` 定义房间类型与约束文件的对应关系：
+`generation/generate_lib/generate_box.py` 中 `ROOM_CONFIG_MAP` 定义房间类型与约束文件的对应关系：
 
 | 房间类型 `room-type` | 约束模块 |
 |----------------------|----------|
@@ -72,7 +72,7 @@ configs_indoor/
 
 ### 4.1 墙厚与净空高度（`generate_box.py` → `RoomConstants.global_params`）
 
-单房间经 `generation/generate_box.py` 调用 `infinigen_examples.single` 时，除写入 **`size_override`**（平面 footprint）外，还会按**当前场景的档位名 `size_name`** 注入墙体参数（与约束模块是 `living_space` 还是 `working_space` **无关**，凡走 `generate_box` 即生效）：
+单房间经 `generation/generate_lib/generate_box.py` 调用 `infinigen_examples.single` 时，除写入 **`size_override`**（平面 footprint）外，还会按**当前场景的档位名 `size_name`** 注入墙体参数（与约束模块是 `living_space` 还是 `working_space` **无关**，凡走 `generate_box` 即生效）：
 
 | 注入项 | 源码常量 | 说明 |
 |--------|-----------|------|
@@ -253,7 +253,7 @@ compose_single_room.solve_small_enabled = False
 
 | 内容 | 位置 |
 |------|------|
-| 房间类型与档位、`size_override`、墙厚/净空高 | `generation/generate_box.py` → `ROOM_SIZE_TIERS`、`ROOM_CONFIG_MAP`、`WALL_HEIGHT_UNIFORM_BY_TIER`、`FIXED_WALL_THICKNESS_M` |
+| 房间类型与档位、`size_override`、墙厚/净空高 | `generation/generate_lib/generate_box.py` → `ROOM_SIZE_TIERS`、`ROOM_CONFIG_MAP`、`WALL_HEIGHT_UNIFORM_BY_TIER`、`FIXED_WALL_THICKNESS_M` |
 | 共享约束与顶灯 | `infinigen_examples/constraints/living_space.py` → `_shared_constraints`、`_lighting_constraints` |
 | 语义标签 | `infinigen_examples/constraints/semantics.py` |
 | 材质分配 | `infinigen/assets/composition/material_assignments.py` |

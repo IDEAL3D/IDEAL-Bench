@@ -49,7 +49,7 @@ configs_indoor/working_space.gin
 
 ## 二、`generate_box.py` 面积档位总览
 
-下列 `(min_w, max_w, min_d, max_d)` 单位：**米**，与 `generation/generate_box.py` → `ROOM_SIZE_TIERS` 一致。未列房型见该文件或 `_DEFAULT_SIZE_TIERS`。
+下列 `(min_w, max_w, min_d, max_d)` 单位：**米**，与 `generation/generate_lib/generate_box.py` → `ROOM_SIZE_TIERS` 一致。未列房型见该文件或 `_DEFAULT_SIZE_TIERS`。
 
 ### 2.1 开放办公室 `open-office`
 
