@@ -1,0 +1,46 @@
+{
+  "$comment": "Protocol design sketch (human-readable). For validating model output JSON use configs/schema/single_scene_v1.json (JSON Schema). GT.json may include scene_id at root; model output must not.",
+  "schema_outline": {
+    "scene": {
+      "room": {
+        "type": "string",
+        "size": ["float", "float", "float"],
+        "asset_count": "integer (must match len(objects))"
+      },
+      "objects": [
+        {
+          "id": "string",
+          "category": "string",
+          "position": ["float", "float", "float"],
+          "dimensions": ["float", "float", "float"],
+          "rotation_yaw": "integer | null (null for lamps and Potted Plant per protocol)"
+        }
+      ]
+    }
+  },
+  "example": {
+    "scene": {
+      "room": {
+        "type": "bedroom",
+        "size": [6.5, 6.0, 2.7],
+        "asset_count": 2
+      },
+      "objects": [
+        {
+          "id": "tv_stand_01",
+          "category": "TV Stand",
+          "position": [0.5, 2.7, 0.0],
+          "dimensions": [1.8, 0.45, 0.55],
+          "rotation_yaw": 0
+        },
+        {
+          "id": "floor_lamp_01",
+          "category": "Floor Lamp",
+          "position": [-1.8, 0.5, 0.0],
+          "dimensions": [0.35, 0.35, 1.6],
+          "rotation_yaw": null
+        }
+      ]
+    }
+  }
+}

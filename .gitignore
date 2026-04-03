@@ -1,0 +1,11 @@
+# data and outputs and api
+data/
+result/
+api/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env

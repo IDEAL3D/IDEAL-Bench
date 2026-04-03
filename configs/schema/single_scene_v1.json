@@ -1,0 +1,74 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "idl3d:single_scene_v1",
+  "title": "IDL3D single scene (v1) — model inference output",
+  "description": "Root must contain only `scene`. Do not include `scene_id` (present in GT.json only). Room uses `size` for W,D,H; each object uses `dimensions` for its box (aligned with GT.json).",
+  "type": "object",
+  "required": ["scene"],
+  "properties": {
+    "scene": {
+      "type": "object",
+      "required": ["room", "objects"],
+      "properties": {
+        "room": {
+          "type": "object",
+          "required": ["type", "size", "asset_count"],
+          "properties": {
+            "type": {
+              "type": "string",
+              "description": "Room category, e.g. bedroom, livingroom, classroom (short lowercase label)."
+            },
+            "size": {
+              "type": "array",
+              "items": { "type": "number" },
+              "minItems": 3,
+              "maxItems": 3,
+              "description": "Room W, D, H in meters (floor protocol: axes per geometric rules)."
+            },
+            "asset_count": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Must equal the length of `scene.objects`."
+            }
+          },
+          "additionalProperties": true
+        },
+        "objects": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/sceneObject" }
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true,
+  "definitions": {
+    "vec3": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "sceneObject": {
+      "type": "object",
+      "required": ["id", "category", "position", "dimensions", "rotation_yaw"],
+      "properties": {
+        "id": { "type": "string" },
+        "category": { "type": "string" },
+        "position": { "$ref": "#/definitions/vec3" },
+        "dimensions": {
+          "$ref": "#/definitions/vec3",
+          "description": "Object box [W, D, H] in meters (same semantics as GT.json `dimensions`)."
+        },
+        "rotation_yaw": {
+          "description": "Integer degrees 0–359 when meaningful; must be null for Floor Lamp, Table Lamp, and Potted Plant (see prompts).",
+          "oneOf": [
+            { "type": "integer", "minimum": 0, "maximum": 359 },
+            { "type": "null" }
+          ]
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

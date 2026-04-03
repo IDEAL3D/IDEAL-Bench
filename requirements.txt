@@ -1,0 +1,11 @@
+# IDL3D — Python 依赖（在仓库根目录执行: pip install -r requirements.txt）
+# 建议 Python >= 3.10。
+
+# ── 重建：默认 --runner bpy（pip bpy，无需安装 blender 可执行文件）──
+numpy>=1.26.0,<3
+# 与 InfiniGen 相同：Blender Python API；版本宜与 .blend 主版本一致（如 4.2.x）
+bpy>=4.2.0,<5
+
+# ── 推理 inference/infer.py ──
+google-genai>=1.0.0
+openai>=1.30.0
