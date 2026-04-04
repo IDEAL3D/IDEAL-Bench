@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-在 Blender 内运行：从已打开的 scene 写出相机与分辨率 JSON（供 ``metadata_builder.resolve_render_metadata`` / ``build_metadata`` 使用）。
+Blender batch helper: write camera and render-resolution JSON from the currently opened scene.
+Used by ``metadata_builder.resolve_render_metadata`` / ``build_metadata`` via a headless Blender subprocess.
 
-用法::
+Usage::
+
     blender -b /path/to/scene.blend --python blender_dump_metadata.py -- /path/to/camera_fragment.json
 
-写出为 JSON：resolution, camera_location, camera_rotation_euler, focal_length_mm, sensor_width,
-rotation_unit (radians), rotation_order (XYZ)。camera_rotation_euler 与 rotation_order 一致。
+Output JSON fields: resolution, camera_location, camera_rotation_euler, focal_length_mm, sensor_width,
+rotation_unit (radians), rotation_order (XYZ). ``camera_rotation_euler`` matches ``rotation_order``.
 """
 
 from __future__ import annotations

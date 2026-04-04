@@ -1,5 +1,5 @@
 """
-组装并写出 ``objects_in_view.json``（含家具重叠摘要字段）；不单独写 ``furniture_overlap.json``。
+Build and write ``objects_in_view.json`` (including furniture overlap summary fields); does not emit a standalone ``furniture_overlap.json``.
 """
 
 from __future__ import annotations
@@ -29,13 +29,8 @@ def build_objects_in_view_only_payload(*, scene_id: str, blend_dir: str) -> Dict
     }
 
 
-def write_info_json_v2(
-    blend_dir: str,
-    *,
-    cam_obj: Any = None,
-) -> Tuple[str, Optional[int]]:
-    """写出 ``objects_in_view.json``（内含重叠 pair_count / volume 摘要）；删除遗留 ``furniture_overlap.json``。"""
-    _ = cam_obj
+def write_info_json_v2(blend_dir: str) -> Tuple[str, Optional[int]]:
+    """Write ``objects_in_view.json`` (overlap pair_count / volume summary); remove legacy ``furniture_overlap.json`` if present."""
     sid = scene_id_from_output_dir(blend_dir)
     payload = build_objects_in_view_only_payload(scene_id=sid, blend_dir=blend_dir)
 

@@ -1,7 +1,7 @@
 """
-发现场景、子进程循环、manifest、汇总日志（父进程不导入 bpy）。
+Scene discovery, subprocess loop, manifests, and summary logging (parent process never imports bpy).
 
-与 ``pipeline`` 分工：本模块负责「怎么跑、跑哪些、跑完写什么」。
+Complements ``pipeline``: orchestration—what runs, on which scenes, and what gets written afterward.
 """
 
 from __future__ import annotations
@@ -40,12 +40,12 @@ FINAL_SCOPE_ROOT = "root"
 
 
 def _generation_dir() -> str:
-    """``IDL3D/generation``（``preprocess_lib`` 的父目录）。"""
+    """``IDL3D/generation`` (parent of ``preprocess_lib``)."""
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _list_png_files_in_scene_dir(scene_dir: str) -> List[str]:
-    """场景目录内（非递归）所有 ``.png`` 文件路径，按文件名排序（大小写不敏感）。"""
+    """Non-recursive list of ``.png`` paths in a scene directory, sorted by basename (case-insensitive)."""
     if not os.path.isdir(scene_dir):
         return []
     out: List[str] = []
@@ -67,7 +67,7 @@ def _repo_root() -> str:
 
 
 def _infinigen_repo_root() -> str:
-    """与 IDL3D 同级的 ``INFINIGEN`` 仓库根（SCENES_SKETCH / SCENES_RAW 所在树）。"""
+    """Sibling ``INFINIGEN`` repo root to IDL3D (tree containing SCENES_SKETCH / SCENES_RAW)."""
     return os.path.normpath(os.path.join(_repo_root(), "..", "INFINIGEN"))
 
 
@@ -84,7 +84,7 @@ def _raw_manifests_dir() -> str:
 
 
 def _processed_root() -> str:
-    """预处理工作根：``INFINIGEN/SCENES_PROCESSED``（与 RAW 同仓库）。"""
+    """Preprocess output root: ``INFINIGEN/SCENES_PROCESSED`` (same checkout as RAW)."""
     return os.path.join(_infinigen_repo_root(), "SCENES_PROCESSED")
 
 
@@ -99,12 +99,12 @@ def _raw_scenes_csv_path(room_type: str) -> str:
 
 
 def _room_folder_name(room_type: str) -> str:
-    """与 generate 一致：目录名房型段（无连字符），用于 ``SCENES_RAW/<folder>/``。"""
+    """Same as generate: room folder segment without hyphens, for ``SCENES_RAW/<folder>/``."""
     return room_type.replace("-", "")
 
 
 def _parse_scene_dir_name(name: str) -> Optional[Tuple[str, str]]:
-    """``bedroom_s955131720`` -> ``(bedroom, 955131720)``；不符合则 ``None``。"""
+    """``bedroom_s955131720`` -> ``(bedroom, 955131720)``; else ``None``."""
     if "_s" not in name:
         return None
     prefix, seed = name.rsplit("_s", 1)
@@ -114,7 +114,7 @@ def _parse_scene_dir_name(name: str) -> Optional[Tuple[str, str]]:
 
 
 def _raw_scene_flat_dir(raw_root: str, scene_id: str) -> Optional[str]:
-    """``--final`` 拷贝/校验：仅 ``<raw_root>/<scene_id>/`` 根目录平铺（不含 ``<raw_root>/<房型>/`` 下已入库副本）。"""
+    """``--final`` copy/validate: only ``<raw_root>/<scene_id>/`` at RAW root (excludes nested ``<raw_root>/<room_type>/`` copies)."""
     flat = os.path.join(raw_root, scene_id)
     if os.path.isdir(flat):
         return flat
@@ -125,7 +125,7 @@ _RAW_ROOT_SKIP_DIR_NAMES = frozenset(
     {"manifests", "DEPRECATED", "0_DEPRECATED", "README.txt", ".DS_Store"}
 )
 
-# SCENES_PROCESSED 根下列目录不应当作 ``<scene_id>/scene.blend`` 参与批扫描
+# Top-level dirs under SCENES_PROCESSED must not be scanned as ``<scene_id>/scene.blend``
 _PROCESSED_TOPLEVEL_SKIP_DIRS = frozenset(
     {
         "manifests",
@@ -137,7 +137,7 @@ _PROCESSED_TOPLEVEL_SKIP_DIRS = frozenset(
 
 
 def _raw_room_subdirs_to_skip_for_flat_scan() -> frozenset[str]:
-    """RAW 根下列为各房型子目录（``SCENES_RAW/bedroom`` 等），非 ``scene_id`` 平铺项。"""
+    """Per-room subdirs at RAW root (``SCENES_RAW/bedroom``, etc.): not flat ``scene_id`` entries."""
     return frozenset(_room_folder_name(rt) for rt in ROOM_TYPES)
 
 
@@ -149,15 +149,15 @@ def _final_scope_normalized(room_type_arg: str) -> str:
     if canonical in ROOM_TYPES_SET:
         return canonical
     raise ValueError(
-        f"无效 --room-type {room_type_arg!r}：用 {FINAL_SCOPE_ROOT!r} 表示 RAW 根目录平铺场景，"
-        f"或为 {list(ROOM_TYPES)} 之一以处理 SCENES_RAW/<房型>/ 下子目录。"
+        f"Invalid --room-type {room_type_arg!r}: use {FINAL_SCOPE_ROOT!r} for flat scene_ids under RAW root, "
+        f"or one of {list(ROOM_TYPES)} for SCENES_RAW/<room_type>/ subdirectories."
     )
 
 
 def _discover_scene_ids_under_raw(scope: str) -> List[str]:
-    """``scope==root``：RAW 根下平铺、且前缀属于 ``ROOM_TYPES`` 的 ``*_s*`` 目录。
+    """If ``scope==root``: flat under RAW root with prefix in ``ROOM_TYPES`` and ``*_s*`` pattern.
 
-    否则：``SCENES_RAW/<房型>/`` 下一层子目录中，合法 ``scene_id`` 且房型前缀与 ``scope`` 一致者。
+    Else: one level under ``SCENES_RAW/<room_type>/`` where ``scene_id`` parses and prefix matches ``scope``.
     """
     raw_root = os.path.join(_infinigen_repo_root(), "SCENES_RAW")
     skip_nested = _raw_room_subdirs_to_skip_for_flat_scan()
@@ -201,7 +201,7 @@ def _discover_scene_ids_under_raw(scope: str) -> List[str]:
 
 
 def _raw_scene_dir_for_final(scope: str, scene_id: str) -> Optional[str]:
-    """``--final`` 拷贝/校验：``root`` 为 ``SCENES_RAW/<scene_id>``，否则 ``SCENES_RAW/<房型>/<scene_id>``。"""
+    """``--final`` copy/validate: ``root`` → ``SCENES_RAW/<scene_id>``; else ``SCENES_RAW/<room_type_folder>/<scene_id>``."""
     raw_root = os.path.join(_infinigen_repo_root(), "SCENES_RAW")
     if scope == FINAL_SCOPE_ROOT:
         return _raw_scene_flat_dir(raw_root, scene_id)
@@ -212,7 +212,7 @@ def _raw_scene_dir_for_final(scope: str, scene_id: str) -> Optional[str]:
 
 
 def _load_scene_id_to_batch_csv(room_type: str) -> Dict[str, str]:
-    """若存在 ``*_scenes.csv``，返回 scene_id -> batch_id；否则空 dict。"""
+    """If ``*_scenes.csv`` exists, return scene_id -> batch_id; else empty dict."""
     path = _raw_scenes_csv_path(room_type)
     if not os.path.isfile(path):
         return {}
@@ -264,7 +264,7 @@ def _append_preprocess_batches_jsonl(path: str, record: dict) -> None:
 
 
 def _read_gt_asset_count(scene_dir: str) -> Optional[int]:
-    """``GT.json`` → ``scene.room.asset_count``；失败时 ``None``。"""
+    """``GT.json`` → ``scene.room.asset_count``; ``None`` on failure."""
     path = os.path.join(scene_dir, GT_JSON_NAME)
     if not os.path.isfile(path):
         return None
@@ -282,7 +282,7 @@ def _read_gt_asset_count(scene_dir: str) -> Optional[int]:
 
 
 def _read_info_asset_count_in_view(scene_dir: str) -> Optional[int]:
-    """``objects_in_view.json``（或旧 ``info.json``）→ ``objects_in_view_count`` / ``asset_count_in_view``。"""
+    """``objects_in_view.json`` (or legacy ``info.json``) → ``objects_in_view_count`` / ``asset_count_in_view``."""
     for fname in (OBJECTS_IN_VIEW_JSON, "info.json"):
         path = os.path.join(scene_dir, fname)
         if not os.path.isfile(path):
@@ -303,8 +303,8 @@ def _read_info_asset_count_in_view(scene_dir: str) -> Optional[int]:
 
 def _batch_avg_asset_metrics(blend_paths: List[str]) -> Tuple[Optional[float], Optional[float]]:
     """
-    返回 ``(avg_gt_asset_count, avg_info_asset_count_in_view)``。
-    若任一场景缺少可读字段则返回 ``(None, None)``。
+    Returns ``(avg_gt_asset_count, avg_info_asset_count_in_view)``.
+    ``(None, None)`` if any scene lacks readable fields.
     """
     if not blend_paths:
         return None, None
@@ -350,7 +350,7 @@ def _finalize_preprocess_batch_jsonl(
             rec["end_seed_inclusive"] = end_seed_inclusive
             rec["avg_gt_asset_count"] = avg_gt_asset_count
             rec["avg_info_asset_count_in_view"] = avg_info_asset_count_in_view
-            # 不写 room_type / scenes_root：房型已含于 preprocess_batch_id 前缀；根目录固定为 SCENES_PROCESSED。
+            # Omit room_type / scenes_root: encoded in preprocess_batch_id prefix; root fixed at SCENES_PROCESSED.
             ordered = {
                 "preprocess_batch_id": rec["preprocess_batch_id"],
                 "num_to_process": rec.get("num_to_process"),
@@ -381,7 +381,7 @@ def _seed_from_scene_id(scene_id: str) -> int:
 def _load_raw_scene_rows(
     room_type: str, raw_batch_ids: Optional[List[str]]
 ) -> List[dict]:
-    """从 RAW 房型 CSV 取行。``raw_batch_ids`` 为 None 或空列表时取**全部**行；否则只保留列出的 batch_id。"""
+    """Load rows from RAW room CSV. If ``raw_batch_ids`` is None or empty, keep **all** rows; else filter by listed batch_id."""
     path = _raw_scenes_csv_path(room_type)
     if not os.path.isfile(path):
         raise FileNotFoundError(f"missing RAW scene list: {path}")
@@ -442,28 +442,28 @@ def _append_preprocess_scene_csv_row(
 
 
 def _assert_raw_scenes_ready_for_final(scope: str, scene_ids: List[str]) -> None:
-    """``--final`` 写 manifest / 拷贝前检查：含 ``scene.blend`` 与至少一个 ``.png``（文件名不限）。"""
+    """Before ``--final`` manifest/write: each scene dir must contain ``scene.blend`` and at least one ``.png`` (any name)."""
     bad: List[str] = []
     for sid in scene_ids:
         src = _raw_scene_dir_for_final(scope, sid)
         if not src:
-            bad.append(f"{sid} (无场景目录)")
+            bad.append(f"{sid} (missing scene directory)")
             continue
         blend = os.path.join(src, "scene.blend")
         if not os.path.isfile(blend):
-            bad.append(f"{sid} (缺 scene.blend @ {src})")
+            bad.append(f"{sid} (missing scene.blend @ {src})")
         elif not _list_png_files_in_scene_dir(src):
-            bad.append(f"{sid} (缺任意 .png 渲染图 @ {src})")
+            bad.append(f"{sid} (missing any .png render @ {src})")
     if not bad:
         return
     loc = (
-        "SCENES_RAW/<scene_id>/（平铺）"
+        "SCENES_RAW/<scene_id>/ (flat)"
         if scope == FINAL_SCOPE_ROOT
         else f"SCENES_RAW/{_room_folder_name(scope)}/<scene_id>/"
     )
     raise ValueError(
-        f"SCENES_RAW 中下列场景未就绪（期望 {loc}，"
-        "且同时包含 scene.blend 与至少一个 .png）：\n  "
+        f"The following SCENES_RAW scenes are not ready (expected {loc}, "
+        "each with scene.blend and at least one .png):\n  "
         + "\n  ".join(bad)
     )
 
@@ -489,12 +489,12 @@ def _copy_raw_scenes_to_processed(
 
 
 def _default_log_path() -> str:
-    """与默认批处理目录一致：``INFINIGEN/SCENES2TEST`` 下。"""
+    """Default log path alongside default batch root ``INFINIGEN/SCENES2TEST``."""
     return os.path.join(_scenes2test_root(), DEFAULT_LOG_FILENAME)
 
 
 def _sync_sketch_to_scenes2test(*, overwrite: bool) -> None:
-    """将 ``SCENES_SKETCH/<scene_id>``（含 ``scene.blend`` 的子目录）复制到 ``SCENES2TEST/<scene_id>``。"""
+    """Copy ``SCENES_SKETCH/<scene_id>`` directories that contain ``scene.blend`` into ``SCENES2TEST/<scene_id>``."""
     sketch = _scenes_sketch_root()
     dest_root = _scenes2test_root()
     if not os.path.isdir(sketch):
@@ -527,7 +527,7 @@ def _sync_sketch_to_scenes2test(*, overwrite: bool) -> None:
 def _overlap_pair_count_from_info_dir(
     scene_dir: str, semantics_enabled: bool
 ) -> Optional[int]:
-    """从 ``objects_in_view.json`` 顶层字段、或遗留 ``furniture_overlap.json`` / ``info.json`` 读取 pair_count。"""
+    """Read pair_count from ``objects_in_view.json`` top level, or legacy ``furniture_overlap.json`` / ``info.json``."""
     if not semantics_enabled:
         return None
     p_ovie = os.path.join(scene_dir, OBJECTS_IN_VIEW_JSON)
@@ -567,7 +567,7 @@ def _overlap_pair_count_from_info_dir(
 
 
 def _overlap_volume_m3_total_from_scene_dir(scene_dir: str) -> Optional[Any]:
-    """从 ``objects_in_view.json`` 读取重叠总体积（若存在）。"""
+    """Read total overlap volume from ``objects_in_view.json`` when present."""
     p_ovie = os.path.join(scene_dir, OBJECTS_IN_VIEW_JSON)
     if not os.path.isfile(p_ovie):
         return None
@@ -586,10 +586,10 @@ def _write_overlap_scene_logs(
     entries: List[Dict[str, Any]],
     out_dir: str,
 ) -> None:
-    """写入 ``overlap_scenes.csv``（固定名）；每有一个重叠场景追加 **一行**。
+    """Append to ``overlap_scenes.csv`` (fixed name); one **row** per overlapping scene.
 
-    ``entries`` 每项含 ``preprocess_batch_id``, ``scene_id``, ``overlap_count``,
-    ``overlap_volume_m3_total``（可选）。
+    Each ``entries`` item may include ``preprocess_batch_id``, ``scene_id``, ``overlap_count``,
+    ``overlap_volume_m3_total`` (optional).
     """
     if not entries:
         return
@@ -627,7 +627,7 @@ def _write_overlap_scene_logs(
 def _append_furniture_overlap_rejects_jsonl(
     manifests_dir: str, entries: List[Dict[str, Any]]
 ) -> None:
-    """逐行追加 ``furniture_overlap_rejects.jsonl``（scene_id + pair_count + 总体积，供审计）。"""
+    """Append JSON lines to ``furniture_overlap_rejects.jsonl`` (scene_id, pair_count, volume for audit)."""
     if not entries:
         return
     os.makedirs(manifests_dir, exist_ok=True)
@@ -649,7 +649,7 @@ def _append_furniture_overlap_rejects_jsonl(
 def _quarantine_overlap_scenes(
     proc_root: str, entries: List[Dict[str, Any]], *, reject_subdir: str
 ) -> None:
-    """将 ``entries`` 中场景目录从 ``proc_root/<scene_id>`` 移至 ``proc_root/<reject_subdir>/``。"""
+    """Move scene dirs in ``entries`` from ``proc_root/<scene_id>`` to ``proc_root/<reject_subdir>/``."""
     if not entries:
         return
     dest_parent = os.path.join(proc_root, reject_subdir)
@@ -717,7 +717,7 @@ def _format_preprocess_report(
     overlap_positive: List[Tuple[str, int]],
     failure_entries: List[Tuple[str, str]],
 ) -> List[str]:
-    """写入 ``preprocess_last.log`` 的单次运行块（单场景或批量）；正文为英文、ASCII 标点。"""
+    """Single run block for ``preprocess_last.log`` (one scene or batch); body uses English and ASCII punctuation."""
     lines = [
         PREPROCESS_LOG_SEP,
         f"- Batch id: {batch_id}",
@@ -741,7 +741,7 @@ def _format_preprocess_report(
 
 
 def _format_log_single(result: Dict[str, Any], elapsed_sec: float) -> List[str]:
-    """``--blend`` 单场景：一块报告，``scenes_total=1``。"""
+    """``--blend`` single-scene report block with ``scenes_total=1``."""
     ok = bool(result.get("ok"))
     ok_c = 1 if ok else 0
     fail_c = 0 if ok else 1
@@ -780,7 +780,7 @@ def _find_bpy_python() -> str:
     return sys.executable
 
 def _discover_blends_box(scenes_root: str) -> List[str]:
-    """先扫 ``root/<子目录>/scene.blend``；若没有，再试 ``root/scene.blend``（单场景目录）。"""
+    """First scan ``root/<subdir>/scene.blend``; if none, try ``root/scene.blend`` (single-scene folder)."""
     out: List[str] = []
     if not os.path.isdir(scenes_root):
         return out
@@ -811,16 +811,15 @@ def _run_batch(
     blend_paths: Optional[List[str]] = None,
     manifest_ctx: Optional[Dict[str, Any]] = None,
 ) -> int:
-    """返回进程退出码：全部成功为 0，否则为 1。
+    """Process exit code: 0 if all scenes succeed, else 1.
 
-    当 ``skip_if_gt`` 为 False（用户传了 ``--force``）时，对每个子进程追加 ``--force``，
-    否则子进程会因已有 ``GT.json`` 立即退出且仍返回 0，导致假成功。
+    When ``skip_if_gt`` is False (user passed ``--force``), append ``--force`` to each child;
+    otherwise a child that exits early because ``GT.json`` exists still returns 0—a false success.
 
-    若给定 ``blend_paths``，则只处理这些 ``scene.blend`` 路径（顺序即处理顺序），
-    不再从 ``scenes_root`` 自动发现。
+    If ``blend_paths`` is set, only those ``scene.blend`` paths run (order preserved); no auto-discovery from ``scenes_root``.
 
-    ``manifest_ctx`` 非空时，每场景向 ``{room_type}_preprocess_scenes.csv`` 追加一行，
-    批末更新 ``preprocess_batches.jsonl`` 中对应批次的 ``num_processed`` / ``end_seed_inclusive``。
+    With non-empty ``manifest_ctx``, append one row per scene to ``{room_type}_preprocess_scenes.csv`` and
+    update ``preprocess_batches.jsonl`` for ``num_processed`` / ``end_seed_inclusive`` at batch end.
     """
     bpy_python = _find_bpy_python()
     generation_dir = _generation_dir()

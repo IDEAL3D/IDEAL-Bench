@@ -1,94 +1,18 @@
 #!/usr/bin/env python
 """
-矩形单房间场景生成脚本。
+Backend for rectangular single-room scenes: runs ``infinigen_examples.single`` and, by default, keeps only
+blend, RGB beauty pass, uint16 instance map, and ``metadata.json`` per scene.
+Room types are canonical ids in ``configs.constant.ROOM_TYPES``; default output layout is
+``SCENES_SKETCH/{type}_s{seed}/`` (override with ``--scenes-root`` / ``--output_folder``).
+For batch runs and RAW manifests, prefer ``generation/generate.py``; see ``../../QUICKSTART/generate.md`` and ``../../docs/LIMITATION.md``.
 
-通过 infinigen_examples.single 生成指定类型、指定尺寸的矩形室内场景。
-输出目录：<INFINIGEN>/SCENES_SKETCH/{canonical}_s{seed}/（默认），例如 bedroom_s12345；canonical 见 ``configs.constant.ROOM_TYPES``。
-默认父目录用于**临时试跑、调参、改场景**；正式批量数据集请用 ``generate.py --scenes-raw`` → ``SCENES_RAW``。
-批量场景父目录可用 ``--scenes-root`` 改为其它路径（如 …/SCENES_RAW）。
+Examples (from ``IDL3D/generation``)::
 
-每个场景目录 ``{roomtype}_s{seed}`` 最终仅保留四样：
+    python generate_lib/core.py
+    python generate_lib/core.py --room-type livingroom --num-scenes 3 --room-size large
+    python generate_lib/core.py --start-seed 42 --sample 256 --task coarse render
 
-- ``scene.blend`` — Blender 源文件
-- ``color.png`` — 正常 RGB（原 ``Image_*.png``）
-- ``instance_segmentation.png`` — Object Index pass，**单通道 uint16** 灰度 PNG（背景为 0，与 Pass Index 一致，可至 65535）
-- ``metadata.json`` — 场景 id、房型、相机与实例索引表（object_index → 语义 id）
-
-流程：先 ``coarse``+``render`` 出 RGB；在清理前再跑一趟 ``@flat/render_image`` 仅用于 Object Index；
-再写 ``metadata.json``（见 ``metadata_builder``：``blender_dump_metadata.py`` 子进程或当前进程 ``bpy``；失败则报错）。最后删至上述四文件。
-
-运行示例:
-    # 默认 1 个场景，中等尺寸
-    python core.py
-
-    # 100 个小房间（单档位批量）
-    python core.py --num-scenes 3 --room-size large
-
-    # 小中大各 3 个，共 9 个（混合档位）
-    python core.py --room-size-mix small:3,medium:3,large:3
-
-    # 客厅大尺寸
-    python core.py --room-type livingroom --room-size large
-
-    # 指定起始 seed、自定义 overrides
-    python core.py --start-seed 42 --num-scenes 5 --room-size large
-    python core.py --overrides "single_room_floor_plan.room_type='kitchen'" "compose_single_room.room_type='kitchen'"
-
-房间类型（--room-type，canonical，可选）:
-    见 ``configs.constant.ROOM_TYPES``；默认 bedroom。对内映射到 Infinigen（多数与 canonical 不同处见 ``CANONICAL_TO_INFINIGEN``）。
-
-房间尺寸档位（--room-size / --room-size-mix）:
-    - **仅非住宅类房型**可用：由用户指定 small/medium/large(/xlarge)。
-    - **住宅类 6 种**：不在命令行选档；厨房/洗手间/饭厅固定单档；bedroom 与 livingroom 在 small/medium
-      两档间按 **50%**（由每个场景的 seed 可复现随机）；homestudio 固定大单间尺寸。
-    - **working_space 四类**（office / meetingroom / classroom / library）均为 **三档**（small / medium / large）；
-      未指定 ``--room-size`` 时，**每个场景**在三档间 **各 1/3** 随机（同一批 ``--num-scenes N`` 内各场景独立抽样，非整批同一档）。
-    运行时用「可用档位」校验：该房型不支持的档位会报错。
-
-    本仓库当前入口**仅支持** living_space 6 类 + working_space 4 类（共 10 种 ``room-type``），不含商业空间。
-
-灯光调参（--light-multiplier）:
-    控制室内灯光（顶灯 + 台灯 + 落地灯）的功率倍率。
-    Infinigen 默认每盏灯 40-100W，渲染曝光 exposure=3（8 倍亮度放大，来自 base_indoors.gin）。
-    单房间场景光反射弱于原版多房间 demo，需要额外提升灯光功率来补偿。
-
-    参数值      效果              适用场景
-    ────────    ──────────────    ────────────────────────────────
-    1.0         原始功率，较暗    模拟夜晚 / 仅靠窗光的氛围
-    3.0         偏暗，柔和        傍晚 / 暖光氛围
-    5.0 (默认)  与原版 demo 接近  日常室内，推荐 baseline
-    8.0         明亮              白天充足光照 / 展示用途
-    10.0        非常亮            商业样板间 / 过曝风格
-
-    示例:
-        python generate_lib/core.py --light-multiplier 5    # baseline，与 Infinigen 样板房一致
-        python generate_lib/core.py --light-multiplier 8    # 更亮
-        python generate_lib/core.py --light-multiplier 3    # 偏暗氛围
-
-    也可通过 --overrides 精细控制:
-        --overrides "configure_render_cycles.exposure=4"    # 提高渲染曝光（2^4=16 倍）
-        --overrides "nishita_lighting.strength=0.4"         # 增强天空/环境光
-
-输出分辨率（--render-width）:
-    默认 1280 → 1280×720（与 base.gin 一致）；``640`` → 640×360，通过 gin 覆盖
-    ``execute_tasks.generate_resolution`` 与 ``get_sensor_coords.W/H``。
-
-渲染采样数（--render-samples）与去噪（--denoise）:
-    base.gin 默认 8192 samples（极高，室内场景容易 OOM）。
-    本脚本默认 128 samples + 开启去噪（兼顾质量与速度）。
-
-    参数值      去噪    效果                适用场景
-    ────────    ─────   ──────────────────  ────────────────────────
-    128 (默认)  开      快速出图            测试阶段 / 快速预览
-    256         开      高质量              日常生成
-    512         关      较高质量            不想用去噪时
-    1024        关      高质量              追求低噪点
-    8192        关      原始默认            极慢，显存需求极大
-
-    示例:
-        python generate_lib/core.py                                       # 默认 128+denoise
-        python generate_lib/core.py --render-samples 256                  # 更高质量
-        python generate_lib/core.py --render-samples 512 --no-denoise     # 不去噪
+Full CLI: ``python generate_lib/core.py --help``.
 """
 
 from __future__ import annotations
@@ -125,7 +49,7 @@ if str(_GEN_LIB_DIR) not in sys.path:
     sys.path.insert(0, str(_GEN_LIB_DIR))
 import metadata_builder  # noqa: E402
 
-# 默认场景父目录：试跑 / 调参与改结果（非正式 RAW 数据集目录，位于同级 INFINIGEN 仓库）
+# Default scene parent is under the sibling INFINIGEN checkout (SKETCH, not formal RAW).
 
 logging.basicConfig(
     format="[%(asctime)s.%(msecs)03d] [%(module)s] [%(levelname)s] | %(message)s",
@@ -135,42 +59,42 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-# 与 generate.py 一致：固定墙厚；地板网格挤出约为该值的一半（BlueprintSolidifier SOLIDIFY）。
-# 设为 None 则不在此注入 gin（可与 generate.py 分叉，独立跑本脚本时注意）。
+# Match generate.py: fixed wall thickness; floor slab extrusion ~half (BlueprintSolidifier SOLIDIFY).
+# None skips gin injection here and may diverge from generate.py.
 FIXED_WALL_THICKNESS_M: float | None = 0.25
 
-# 房间净空（墙高）：按面积档位对 RoomConstants.global_params.wall_height 注入 uniform 区间。
-# 未列档位不注入，沿用 gin 默认 ("uniform", 2.8, 3.2)。
+# Interior wall height: inject ``RoomConstants.global_params.wall_height`` uniform by area tier.
+# Omitted tiers keep gin default ("uniform", 2.8, 3.2).
 WALL_HEIGHT_UNIFORM_BY_TIER: dict[str, tuple[float, float]] = {
     "small": (2.8, 3.2),
     "medium": (3.0, 4.0),
     "large": (4.0, 6.0),
-    # 商业 xlarge、住宅 homestudio(studio) 无单独约定时与 large 同档净空
+    # xlarge and homestudio studio tier align with large unless specified elsewhere
     "xlarge": (4.0, 6.0),
     "studio": (4.0, 6.0),
 }
 
 # ---------------------------------------------------------------------------
-# 房间尺寸档位  (min_w, max_w, min_d, max_d) 米
+# Footprint bounds (min_w, max_w, min_d, max_d) meters
 # ---------------------------------------------------------------------------
-# 通用 fallback（未来新增 room-type 且未写入 ROOM_SIZE_TIERS 时使用）：仅三档
+# Fallback for room types without a ROOM_SIZE_TIERS entry
 _DEFAULT_SIZE_TIERS: dict[str, tuple[float, float, float, float]] = {
     "small":  (2.5, 3.5, 2.5, 3.5),
     "medium": (3.5, 6.0, 3.5, 6.0),
     "large":  (6.0, 8.0, 6.0, 8.0),
 }
 
-# 按房间类型的专属尺寸档位（键为 **canonical**，与 ``configs.constant.ROOM_TYPES`` 一致）。
-# 住宅 living_space（6 类）：厨房/洗手间/饭厅仅固定一档；卧室与客厅各两档由脚本按 seed 50% 抽样；
-# homestudio 为原 large 卧室（≥36 m² 家具档），由用户显式选择房型。
+# Per-room-type footprint tiers (keys are **canonical**, same as ``configs.constant.ROOM_TYPES``).
+# Residential living_space (6): kitchen/bath/dining fixed single tier; bedroom/livingroom two tiers 50/50 by seed;
+# homestudio is the old large-bedroom / open-studio layout (user selects room type).
 ROOM_SIZE_TIERS: dict[str, dict[str, tuple[float, float, float, float]]] = {
-    # --- 住宅 living_space ---
+    # --- Residential living_space ---
     "bedroom": {
-        "small":  (3.0, 3.9, 3.0, 3.9),   # <16 m² 平均 → 单人床
-        "medium": (4.0, 5.5, 4.0, 5.5),   # 16–36 m² 平均 → 双人床
+        "small":  (3.0, 3.9, 3.0, 3.9),   # ~<16 m^2 avg — twin/single bed layout
+        "medium": (4.0, 5.5, 4.0, 5.5),   # ~16-36 m^2, double bed
     },
     "homestudio": {
-        "studio": (5.0, 7.0, 5.0, 7.0),   # 原 large 卧室 / home-studio
+        "studio": (5.0, 7.0, 5.0, 7.0),   # Former large bedroom / home studio
     },
     "livingroom": {
         "small":  (3.0, 5.0, 3.0, 5.0),
@@ -185,31 +109,31 @@ ROOM_SIZE_TIERS: dict[str, dict[str, tuple[float, float, float, float]]] = {
     "diningroom": {
         "medium": (3.5, 5.5, 3.5, 5.5),
     },
-    # --- 大空间（canonical：office / meetingroom / …）---
+    # --- Working-space canonical types (office / meetingroom / …) ---
     "office": {
-        "small":  (3.0, 4.0, 3.0, 4.0),        # ~9-16 m²   单人办公室
-        "medium": (4.0, 6.0, 4.0, 6.0),        # ~16-36 m²  普通多人办公室
-        "large":  (6.0, 8.0, 6.0, 8.0),        # ~36-64 m²  普通多人办公室
+        "small":  (3.0, 4.0, 3.0, 4.0),        # ~9-16 m^2 single office
+        "medium": (4.0, 6.0, 4.0, 6.0),        # ~16-36 m^2 multi-desk
+        "large":  (6.0, 8.0, 6.0, 8.0),        # ~36-64 m^2 open office
     },
     "meetingroom": {
-        "small":  (3.5, 5.0, 3.0, 4.5),        # ~10-22 m²
-        "medium": (5.0, 7.0, 4.0, 5.5),        # ~20-38 m²
-        "large":  (7.0, 10.0, 5.5, 7.0),       # ~38-70 m²
+        "small":  (3.5, 5.0, 3.0, 4.5),        # ~10-22 m^2
+        "medium": (5.0, 7.0, 4.0, 5.5),        # ~20-38 m^2
+        "large":  (7.0, 10.0, 5.5, 7.0),       # ~38-70 m^2
     },
     "classroom": {
-        "small":  (6.0, 6.5,  8.0, 8.5),       # 3 组 × 6-7 行 ≈ 36-42 座
-        "medium": (6.0, 7.0,  8.5, 9.5),       # 3 组 × 7-8 行 ≈ 42-48 座（标准）
-        "large":  (6.5, 7.5,  9.0, 10.0),      # 3-4 组 × 7-8 行 ≈ 42-64 座
+        "small":  (6.0, 6.5,  8.0, 8.5),       # ~3 bays x 6-7 rows
+        "medium": (6.0, 7.0,  8.5, 9.5),       # ~3 bays x 7-8 rows
+        "large":  (6.5, 7.5,  9.0, 10.0),      # ~3-4 bays x 7-8 rows
     },
-    # (min_w, max_w, min_d, max_d)；与 ../docs/WORKING_SPACE_DESIGN.md §2.4、§3.4 一致
+    # Matches ../docs/WORKING_SPACE_DESIGN.md §2.4, §3.4
     "library": {
-        "small":  (7.5, 10.0,  6.0, 9.5),       # 小型阅览室；目标块数与排数见 working_space._place_library_grid
-        "medium": (10.0, 15.0,  9.5, 16.0),     # 普通图书馆
-        "large":  (16.0, 30.0, 18.0, 36.0),     # 大型图书馆（由原 large/xlarge 合并上移）
+        "small":  (7.5, 10.0,  6.0, 9.5),       # Reading room; block counts in working_space._place_library_grid
+        "medium": (10.0, 15.0,  9.5, 16.0),     # Medium stack hall
+        "large":  (16.0, 30.0, 18.0, 36.0),     # Large hall (merged former large/xlarge)
     },
 }
 
-# 所有可能的档位名（取各房间类型档位名的并集）
+# Union of all tier names across ROOM_SIZE_TIERS
 ALL_SIZE_TIER_NAMES: list[str] = sorted(
     set(_DEFAULT_SIZE_TIERS)
     | {t for tiers in ROOM_SIZE_TIERS.values() for t in tiers},
@@ -218,7 +142,7 @@ ALL_SIZE_TIER_NAMES: list[str] = sorted(
 
 
 def get_available_tiers(room_type: str) -> list[str]:
-    """返回指定房间类型的所有可用档位名。"""
+    """List tier names defined for ``room_type``, or default small/medium/large."""
     room_tiers = ROOM_SIZE_TIERS.get(room_type, {})
     if room_tiers:
         return list(room_tiers)
@@ -230,7 +154,7 @@ def _is_living_space_room(canonical_room_type: str) -> bool:
 
 
 def resolve_living_space_tier(canonical_room_type: str, seed: int) -> str:
-    """住宅类：每个场景一个内部档位（写入 gin size_override，不出现在输出目录名）。``canonical_room_type`` 为 canonical。"""
+    """Pick internal size tier for one residential scene (injected via gin; omitted from folder names)."""
     rng = random.Random(seed)
     if canonical_room_type in ("kitchen", "bathroom", "diningroom"):
         return "medium"
@@ -238,17 +162,17 @@ def resolve_living_space_tier(canonical_room_type: str, seed: int) -> str:
         return "studio"
     if canonical_room_type in ("bedroom", "livingroom"):
         return rng.choice(["small", "medium"])
-    raise ValueError(f"非住宅 living_space 房型: {canonical_room_type!r}")
+    raise ValueError(f"Not a residential living_space room type: {canonical_room_type!r}")
 
 
 def get_size_for_room(
     room_type: str, tier: str
 ) -> tuple[float, float, float, float]:
-    """查询房间的尺寸档位。有专属定义时只查专属；否则回退到默认。"""
+    """Resolve (min_w, max_w, min_d, max_d) for ``room_type`` and ``tier``."""
     avail = get_available_tiers(room_type)
     if tier not in avail:
         raise ValueError(
-            f"房间类型 '{room_type}' 不支持档位 '{tier}'。可用: {avail}"
+            f"Room type '{room_type}' has no tier '{tier}'. Valid: {avail}"
         )
     room_tiers = ROOM_SIZE_TIERS.get(room_type, {})
     if tier in room_tiers:
@@ -256,16 +180,16 @@ def get_size_for_room(
     return _DEFAULT_SIZE_TIERS[tier]
 
 
-# 房间类型 → GIN 配置文件 & 约束模块 映射（键为 **canonical**）
+# Canonical room type -> gin config stem / constraint module namespace
 ROOM_CONFIG_MAP = {
-    # 住宅 (living_space)
+    # Residential (living_space)
     "bedroom":     "living_space",
     "homestudio":  "living_space",
     "livingroom": "living_space",
     "kitchen":     "living_space",
     "bathroom":    "living_space",
     "diningroom": "living_space",
-    # 办公/教学 (working_space)
+    # Office / education (working_space)
     "office":  "working_space",
     "meetingroom": "working_space",
     "classroom":    "working_space",
@@ -283,45 +207,27 @@ FURNITURE_SIZE_OVERRIDE_GIN_TEMPLATE = "{module}.furniture_constraints.size_over
 
 
 def get_render_gpu() -> str:
-    """选择用于渲染的 GPU 编号。默认 2；后续可接入智能选择模块。"""
-    # TODO: 智能选择 GPU 模块
-    return "2"
+    """Return GPU id string used when ``--gpu`` is omitted (passed as ``CUDA_VISIBLE_DEVICES``).
+
+    Reads environment variable ``IDL3D_GPU``; if unset, returns ``'2'``.
+
+    Release note: remove this helper and every ``CUDA_VISIBLE_DEVICES`` assignment in this
+    module; let the user's environment manage device visibility.
+    """
+    return os.environ.get("IDL3D_GPU", "2")
 
 
 def _size_override_gin_value(tup: tuple[float, float, float, float]) -> str:
-    """返回可传入 gin overrides 的 size_override 字符串。"""
+    """Format ``(w0,w1,d0,d1)`` string for gin size_override."""
     return f"({tup[0]},{tup[1]},{tup[2]},{tup[3]})"
 
 
-def _parse_room_size_mix(mix_str: str) -> list[str]:
-    """
-    解析 --room-size-mix，例如 "small:3,medium:3,large:3" -> [small,small,small, medium,medium,medium, large,large,large]。
-    返回按顺序的档位列表，长度为总场景数。
-    """
-    out = []
-    for part in mix_str.strip().split(","):
-        part = part.strip()
-        if ":" not in part:
-            raise ValueError(f"room-size-mix 每项须为 档位:数量，例如 small:3，当前: {part!r}")
-        name, count_str = part.split(":", 1)
-        name = name.strip().lower()
-        if name not in ALL_SIZE_TIER_NAMES:
-            raise ValueError(f"未知档位 {name!r}，可选: {ALL_SIZE_TIER_NAMES}")
-        try:
-            n = int(count_str.strip())
-        except ValueError:
-            raise ValueError(f"room-size-mix 数量须为整数: {count_str!r}")
-        if n < 1:
-            raise ValueError(f"room-size-mix 数量须 >= 1: {n}")
-        out.extend([name] * n)
-    return out
-
-
 def _run(cmd: list[str], gpu: str | None = None) -> None:
-    """在 ``IDL3D/infinigen-idl3d`` 根目录下运行子进程命令。"""
+    """Run ``cmd`` as a subprocess with cwd at ``infinigen-idl3d`` root."""
     logger.info("[CMD] %s", " ".join(cmd))
     env = None
     if gpu is not None:
+        # Release: drop CUDA_VISIBLE_DEVICES injection; use host env only (see get_render_gpu).
         env = os.environ.copy()
         env["CUDA_VISIBLE_DEVICES"] = gpu
         logger.info("CUDA_VISIBLE_DEVICES=%s", gpu)
@@ -339,7 +245,7 @@ def _build_gt_object_index_command(
     gt_output_folder: Path,
     args,
 ) -> list[str]:
-    """第二趟：flat / Object Index，输出至单独子目录，避免覆盖 color.png。"""
+    """Second pass: flat Object Index render into ``gt_output_folder`` (avoids clobbering color.png)."""
     w, h = (640, 360) if args.render_width == 640 else (1280, 720)
     cmd: list[str] = [
         sys.executable,
@@ -363,7 +269,7 @@ def _build_gt_object_index_command(
         f"get_sensor_coords.W={w}",
         f"get_sensor_coords.H={h}",
     ]
-    # 勿并入用户 --overrides，以免覆盖 render.render_image_func（必须为 flat）
+    # Do not merge user --overrides here: must keep render.render_image_func=flat
     if args.task_uniqname is not None:
         cmd += ["--task_uniqname", args.task_uniqname]
     if args.debug:
@@ -372,10 +278,10 @@ def _build_gt_object_index_command(
 
 
 def _rename_rgb_to_color_png(folder: Path) -> Path:
-    """将首帧 ``Image_*.png`` 重命名为 ``color.png``（新管线首趟渲染产物）。"""
+    """Rename first ``Image_*.png`` from the primary render to ``color.png``."""
     images = sorted(folder.glob("Image_*.png"))
     if not images:
-        raise FileNotFoundError(f"未找到 Image_*.png: {folder}")
+        raise FileNotFoundError(f"No Image_*.png in {folder}")
     src = images[0]
     dst = folder / "color.png"
     if src.resolve() != dst.resolve():
@@ -386,12 +292,7 @@ def _rename_rgb_to_color_png(folder: Path) -> Path:
 
 
 def _ensure_color_png(folder: Path) -> Path:
-    """保证存在 ``color.png``。
-
-    - **新数据**：目录内有 ``Image_*.png``（首趟 Cycles 输出）则改名为 ``color.png``。
-    - **旧数据**：已有 ``color.png``（例如仅保留 blend+彩图时）则不再要求 ``Image_*.png``。
-    - **部分导出**：仅有小写 ``image.png`` 时重命名为 ``color.png``。
-    """
+    """Ensure ``color.png`` exists: prefer existing file, else rename ``Image_*.png`` or ``image.png``."""
     folder = Path(folder)
     dst = folder / "color.png"
     if dst.is_file():
@@ -399,25 +300,22 @@ def _ensure_color_png(folder: Path) -> Path:
     alt = folder / "image.png"
     if alt.is_file():
         alt.rename(dst)
-        logger.info("已将 image.png 重命名为 color.png: %s", folder)
+        logger.info("Renamed image.png -> color.png: %s", folder)
         return dst
     return _rename_rgb_to_color_png(folder)
 
 
 def _ensure_mask_tag_json_for_rerender(input_folder: Path) -> None:
-    """``execute_tasks`` 在 ``input_folder != coarse`` 时会 ``load_tag(MaskTag.json)``。
-
-    精简/老目录若已删掉 ``MaskTag.json`` 会报错；``tag_system`` 接受空映射 ``{}``。
-    """
+    """ensure MaskTag.json exists for render-only reruns (execute_tasks loads tags when input != coarse)."""
     p = Path(input_folder) / "MaskTag.json"
     if p.is_file():
         return
     p.write_text("{}", encoding="utf-8")
-    logger.info("已补写空 MaskTag.json（Infinigen 仅 render 输入所需）: %s", p)
+    logger.info("Wrote empty MaskTag.json (required for render input): %s", p)
 
 
 def _write_instance_segmentation_png(npy_path: Path, out_png: Path) -> None:
-    """将 Object Index 存为 **uint16 灰度 PNG**，避免 Pass Index>255 时与 uint8 模 256 碰撞。"""
+    """Write Object Index pass as uint16 grayscale PNG (avoids uint8 wrap for pass index > 255)."""
     arr = np.load(npy_path)
     if arr.ndim != 2:
         arr = arr.reshape(arr.shape[0], arr.shape[1])
@@ -425,21 +323,21 @@ def _write_instance_segmentation_png(npy_path: Path, out_png: Path) -> None:
     max_v = float(np.nanmax(arr)) if arr.size else 0.0
     if max_v > 65535:
         logger.warning(
-            "Object Index 最大值 %.0f > 65535，已 clip 到 uint16 PNG 可表示范围",
+            "Object index max %.0f > 65535; clamping to uint16 range",
             max_v,
         )
     u16 = np.ascontiguousarray(np.clip(arr, 0, 65535).astype(np.uint16))
     try:
         imwrite(out_png, u16)
     except Exception as e:
-        logger.debug("imageio 写 uint16 PNG 失败，尝试 PIL mode I: %s", e)
+        logger.debug("imageio uint16 PNG write failed; trying PIL mode I: %s", e)
         try:
             from PIL import Image
 
             Image.fromarray(u16.astype(np.int32), mode="I").save(out_png)
         except Exception as e2:
             raise RuntimeError(
-                "无法写入 16-bit instance_segmentation.png（请安装 imageio PNG 或 Pillow）"
+                "Cannot write 16-bit instance_segmentation.png (install imageio PNG support or Pillow)"
             ) from e2
 
 
@@ -452,14 +350,14 @@ def _finalize_scene_outputs(
     *,
     clean_to_four: bool = True,
 ) -> None:
-    """在首次 coarse+render 之后：Object Index 第二趟、metadata、可选仅保留四文件。
+    """After coarse+render: flat Object Index pass, metadata, optional prune to four deliverables.
 
-    ``clean_to_four=False`` 时保留目录内除四文件外的其它内容（用于补跑旧数据时谨慎不删中间件）。
+    If ``clean_to_four=False``, keep auxiliary files (useful when repairing legacy folders).
     """
     output_folder = Path(output_folder).resolve()
     blend_path = output_folder / "scene.blend"
     if not blend_path.is_file():
-        raise FileNotFoundError(f"缺少 scene.blend: {output_folder}")
+        raise FileNotFoundError(f"Missing scene.blend under {output_folder}")
 
     _ensure_color_png(output_folder)
     _ensure_mask_tag_json_for_rerender(output_folder)
@@ -473,19 +371,19 @@ def _finalize_scene_outputs(
         gt_cmd = _build_gt_object_index_command(seed, output_folder, gt_dir, args)
         _run(gt_cmd, gpu=gpu)
     except subprocess.CalledProcessError as e:
-        logger.exception("Object Index（flat render）失败")
+        logger.exception("Object index (flat render) failed")
         raise RuntimeError(
-            "生成 instance_segmentation 失败：请确认 Infinigen 能读取 scene.blend；"
-            "若仍报错，检查是否缺少 assets/ 或与 coarse 时不一致；"
-            "MaskTag.json 若缺失已由脚本补空对象。"
+            "instance_segmentation pass failed: ensure Infinigen can load scene.blend; "
+            "if it persists, verify assets/ match the coarse run; "
+            "an empty MaskTag.json is written when missing."
         ) from e
 
     seg_npy = sorted(gt_dir.glob("ObjectSegmentation*.npy"))
     if not seg_npy:
-        raise FileNotFoundError(f"未找到 ObjectSegmentation*.npy: {gt_dir}")
+        raise FileNotFoundError(f"No ObjectSegmentation*.npy under {gt_dir}")
     objs_json = sorted(gt_dir.glob("Objects*.json"))
     if not objs_json:
-        raise FileNotFoundError(f"未找到 Objects*.json: {gt_dir}")
+        raise FileNotFoundError(f"No Objects*.json under {gt_dir}")
 
     _write_instance_segmentation_png(seg_npy[0], output_folder / "instance_segmentation.png")
 
@@ -495,7 +393,6 @@ def _finalize_scene_outputs(
         canonical_room_type,
         blend_path,
         objs_json[0],
-        args,
     )
     (output_folder / "metadata.json").write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2),
@@ -510,7 +407,7 @@ def _finalize_scene_outputs(
 
 
 def _delete_all_except_final_four(output_folder: Path) -> None:
-    """仅保留 scene.blend、color.png、instance_segmentation.png、metadata.json。"""
+    """Keep only scene.blend, color.png, instance_segmentation.png, metadata.json."""
     output_folder = Path(output_folder)
     for p in list(output_folder.iterdir()):
         if p.name in FINAL_KEEP_NAMES:
@@ -524,8 +421,8 @@ def _delete_all_except_final_four(output_folder: Path) -> None:
                 pass
     for name in FINAL_KEEP_NAMES:
         if not (output_folder / name).is_file():
-            logger.warning("最终输出缺少文件: %s", name)
-    logger.info("清理完成，仅保留: %s", ", ".join(sorted(FINAL_KEEP_NAMES)))
+            logger.warning("Final output missing file: %s", name)
+    logger.info("Cleanup done; kept: %s", ", ".join(sorted(FINAL_KEEP_NAMES)))
 
 
 def _build_single_command(
@@ -535,7 +432,7 @@ def _build_single_command(
     output_folder: Path,
     args,
 ) -> list[str]:
-    """构建调用 infinigen_examples.single 的命令。尺寸表按 canonical 查；gin 内 room_type 用 Infinigen 串。"""
+    """Build argv for ``infinigen_examples.single``: sizes from canonical table, gin room_type from Infinigen string."""
     infinigen_rt = infinigen_room_type(canonical_room_type)
     base = [sys.executable, "-m", "infinigen_examples.single"]
     cli_seed = f"s{seed}"
@@ -562,7 +459,7 @@ def _build_single_command(
         "full/render_image.passes_to_save=[]",
         "full/render_image.skip_reorganize_frames=True",
         f"configure_render_cycles.num_samples={args.render_samples}",
-        f"configure_render_cycles.denoise={str(args.denoise)}",
+        "configure_render_cycles.denoise=True",
         f"{size_gin_key}={size_gin}",
         f"{furn_size_gin_key}={size_gin}",
         f"{module}.floor_plan.room_type='{infinigen_rt}'",
@@ -608,112 +505,109 @@ def _build_single_command(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="生成矩形单房间室内场景（通过 infinigen_examples.single）。"
+        description="Generate rectangular single-room indoor scenes via infinigen_examples.single."
     )
-    parser.add_argument("--start-seed", type=int, default=None, help="起始 seed，不提供则用随机大整数；批量时依次 +1")
-    parser.add_argument("--num-scenes", type=int, default=1, help="生成多少个场景（未指定 --room-size-mix 时生效）")
+    parser.add_argument(
+        "--start-seed",
+        type=int,
+        default=None,
+        help="Starting seed; if omitted, a random 31-bit value; incremented per scene in batch",
+    )
+    parser.add_argument("--num-scenes", type=int, default=1, help="Number of scenes to generate")
     parser.add_argument(
         "--room-size",
         type=str,
         default=None,
         help=(
-            "房间尺寸档位（仅非住宅类房型生效；住宅类见脚本说明，此参数会被忽略）。"
-            "未指定时：working_space 四类（office / meetingroom / classroom / library）"
-            "在每个场景 small/medium/large 间各 1/3 随机；其它非住宅房型为 medium。"
+            "Size tier for non-residential types only (ignored for residential). "
+            "If omitted: working_space types draw small/medium/large 1/3 per scene; other non-residential default medium."
         ),
-    )
-    parser.add_argument(
-        "--room-size-mix",
-        type=str,
-        default=None,
-        help="混合档位（仅非住宅类房型）：如 small:3,medium:3；总场景数=各数量之和",
     )
     parser.add_argument(
         "--room-type",
         type=str,
         default="bedroom",
         choices=list(ROOM_TYPES),
-        help="房型（canonical snake_case，见 configs.constant.ROOM_TYPES），目录名 {room_type}_s{seed}",
+        help="Canonical room type (configs.constant.ROOM_TYPES); folder name {room_type}_s{seed}",
     )
     parser.add_argument(
         "--task",
         nargs="+",
         default=["coarse", "render"],
         choices=["coarse", "populate", "fine_terrain", "ground_truth", "render", "mesh_save", "export"],
-        help="任务阶段，默认 coarse+render 自动出图",
+        help="Infinigen task pipeline stages (default coarse render)",
     )
     parser.add_argument(
         "--light-multiplier",
         type=float,
         default=None,
-        help="灯光亮度倍率（覆盖 GIN 中的默认值 5.0）。值越大越亮，建议范围 3-10。",
+        help="Interior light energy multiplier (overrides gin default ~5.0); typical range ~3-10",
     )
     parser.add_argument(
-        "--render-samples",
+        "--sample",
         type=int,
         default=128,
-        help=(
-            "Cycles 渲染采样数（默认 128，base.gin 原始值为 8192）。"
-            "搭配 --denoise（默认开启）可获得高质量结果；"
-            "不开 denoise 时建议 512-1024。"
-        ),
-    )
-    parser.add_argument(
-        "--denoise",
-        action="store_true",
-        default=True,
-        help="启用 Cycles 去噪器（默认开启），可大幅降低所需采样数。",
-    )
-    parser.add_argument(
-        "--no-denoise",
-        action="store_true",
-        default=False,
-        help="关闭 Cycles 去噪器。",
+        dest="render_samples",
+        metavar="N",
+        help="Cycles samples (default 128; base.gin uses 8192); denoising always on",
     )
     parser.add_argument(
         "--gpu",
         type=str,
         default=None,
         help=(
-            "指定使用的 GPU 编号（通过 CUDA_VISIBLE_DEVICES），如 --gpu 2。"
-            "不指定时默认使用 get_render_gpu()（当前为 2）。多卡用逗号分隔如 --gpu 2,6。"
+            "GPU id(s) for CUDA_VISIBLE_DEVICES, e.g. --gpu 2. If omitted, uses get_render_gpu() "
+            "(IDL3D_GPU env or default '2'). Comma-separated for multiple devices, e.g. --gpu 2,6."
         ),
     )
-    parser.add_argument("--configs", nargs="+", default=None, help="Gin 配置文件名（默认按 room-type 自动选择，如 living_space、working_space）")
+    parser.add_argument(
+        "--configs",
+        nargs="+",
+        default=None,
+        help="Gin config names (default chosen from room type: living_space, working_space, …)",
+    )
     parser.add_argument(
         "--render-width",
         type=int,
         choices=(1280, 640),
         default=1280,
         metavar="W",
-        help="输出图像分辨率（宽×高）：1280→1280×720（默认），640→640×360；覆盖 execute_tasks.generate_resolution 与 get_sensor_coords",
+        help="Output resolution: 1280 -> 1280x720 (default), 640 -> 640x360; sets execute_tasks + sensor size",
     )
-    parser.add_argument("--overrides", nargs="+", default=[], help="临时覆盖 gin 参数，格式如 模块.参数=值")
+    parser.add_argument(
+        "--overrides",
+        nargs="+",
+        default=[],
+        help="Extra gin overrides, e.g. module.param=value",
+    )
     parser.add_argument(
         "--scenes-root",
         type=Path,
         default=None,
-        help=f"批量场景父目录，默认 {SCENES_SKETCH_ROOT}；子目录为 {{roomtype}}_s{{seed}}/",
+        help=f"Parent directory for batch scenes (default {SCENES_SKETCH_ROOT}); children {{roomtype}}_s{{seed}}/",
     )
     parser.add_argument(
         "--output_folder",
         type=Path,
         default=None,
-        help="输出目录，默认 SCENES_SKETCH/scene_seed_XXXX",
+        help="Output directory for single-scene runs (default under SCENES_SKETCH)",
     )
-    parser.add_argument("--input_folder", type=Path, default=None, help="输入目录（仅 render 单独跑时用）")
+    parser.add_argument(
+        "--input_folder",
+        type=Path,
+        default=None,
+        help="Input folder for render-only continuation runs",
+    )
     parser.add_argument("--task_uniqname", type=str, default=None)
-    parser.add_argument("--debug", type=str, nargs="*", default=None, help="调试模式")
+    parser.add_argument("--debug", type=str, nargs="*", default=None, help="Forward --debug flags to Infinigen")
     args = parser.parse_args()
 
-    if args.no_denoise:
-        args.denoise = False
     if args.gpu is None:
         args.gpu = get_render_gpu()
 
     canonical = args.room_type
 
-    # 根据 room-type 自动选择 GIN 配置（canonical → living_space / working_space）
+    # Choose gin config from canonical room type -> living_space / working_space
     if args.configs is None:
         args.configs = [ROOM_CONFIG_MAP[canonical]]
 
@@ -724,19 +618,15 @@ def main() -> None:
 
     if args.start_seed is None:
         args.start_seed = secrets.randbelow(2**31 - 1)
-        print(f"[INFO] start-seed 未指定，使用随机值: {args.start_seed}")
+        print(f"[INFO] --start-seed omitted; using {args.start_seed}")
 
     living = _is_living_space_room(canonical)
 
-    # 确定每个场景的档位列表（尺寸查询用 canonical）
+    # Per-scene size tier names (resolved via canonical room type)
     if living:
-        if args.room_size_mix is not None:
-            parser.error(
-                "住宅类房型不使用 --room-size-mix；档位由脚本按规则随机或固定。"
-            )
         if args.room_size is not None and args.room_size != "medium":
             logger.warning(
-                "住宅类房型忽略 --room-size=%s（使用内部 small/medium 或固定档）。",
+                "Residential room type ignores --room-size=%s (using internal small/medium or fixed tiers).",
                 args.room_size,
             )
         num_scenes = args.num_scenes
@@ -744,9 +634,6 @@ def main() -> None:
             resolve_living_space_tier(canonical, args.start_seed + i)
             for i in range(num_scenes)
         ]
-    elif args.room_size_mix is not None:
-        size_list = _parse_room_size_mix(args.room_size_mix)
-        num_scenes = len(size_list)
     else:
         num_scenes = args.num_scenes
         if args.room_size is None:
@@ -764,8 +651,7 @@ def main() -> None:
     for tier in set(size_list):
         if tier not in avail:
             parser.error(
-                f"房间类型 '{canonical}' 不支持档位 '{tier}'。"
-                f"可用: {avail}"
+                f"Room type '{canonical}' has no tier '{tier}'. Valid: {avail}"
             )
 
     for i in range(num_scenes):
@@ -784,13 +670,13 @@ def main() -> None:
         if "render" in args.task:
             _finalize_scene_outputs(output_folder, seed, canonical, args, gpu=args.gpu)
             print(
-                f"[OK] 场景已保存: scene.blend, color.png, instance_segmentation.png, metadata.json → {output_folder}"
+                f"[OK] Scene saved: scene.blend, color.png, instance_segmentation.png, metadata.json -> {output_folder}"
             )
         else:
             logger.warning(
-                "task 未包含 render，跳过 Object Index / metadata；目录中可能仍有 coarse 中间文件，请自行清理。"
+                "Task list has no render: skipping object index / metadata; coarse intermediates may remain."
             )
-            print(f"[OK] 场景（无 render 后处理）: {output_folder}")
+            print(f"[OK] Scene output (no render postprocess): {output_folder}")
 
 
 if __name__ == "__main__":

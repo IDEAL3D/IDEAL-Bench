@@ -1,11 +1,11 @@
 """
-相机 / 房间几何 / 资产集合；**in-view 由 ``metadata.json`` 的 ``object_index_map`` +
-``instance_segmentation.png``（uint16）统计**，不再用 ``bpy.object.pass_index``。
+Camera / room geometry / asset sets. **In-view sets derive from ``metadata.json`` ``object_index_map`` +
+``instance_segmentation.png`` (uint16) pixel counts**, not ``bpy.object.pass_index``.
 
-``extract_gt.py``、``overlap_check`` 共用 ``collect_assets`` / ``factory_to_category`` / AABB 工具。
+``extract_gt`` and ``overlap_check`` share ``collect_assets``, ``factory_to_category``, and AABB helpers.
 
-调试：在 ``PYTHONPATH`` 含 ``generation`` 下 ``blender -b scene.blend --python -c "..."`` 调用
-``build_instance_seg_view_payload``。
+Debug: with ``generation`` on ``PYTHONPATH``, run ``blender -b scene.blend --python -c "..."`` calling
+``build_instance_seg_view_payload``.
 """
 
 from __future__ import annotations
@@ -30,11 +30,11 @@ from configs.constant import MIN_VISIBLE_PIXELS, canonicalize_asset_category
 
 
 class MissingMetadataInstanceMapError(RuntimeError):
-    """``metadata.json`` 缺失，或 ``instance_map.object_index_map`` 非 dict / 为空。"""
+    """``metadata.json`` missing, or ``instance_map.object_index_map`` not a non-empty dict."""
 
     pass
 
-# ── 原 preprocess/config.py：GT/视锥 共用集合规则（无 bpy 依赖）────────────────
+# Legacy preprocess/config.py: collection rules shared by GT / frustum (no bpy).
 ROOM_STRUCTURE_COLLECTIONS = frozenset(
     {
         "unique_assets:room_wall",
@@ -57,7 +57,7 @@ FULL_DELETE_COLLECTION_PREFIXES = (
 )
 
 def scene_id_from_output_dir(dir_path: str) -> str:
-    """与含 ``scene.blend`` 的场景目录文件夹名一致（如 ``kitchen_medium_s1759680675``）。"""
+    """Basename of the scene folder containing ``scene.blend`` (e.g. ``kitchen_medium_s1759680675``)."""
     return os.path.basename(os.path.normpath(os.path.abspath(dir_path)))
 
 
@@ -106,7 +106,7 @@ KEEP_CATEGORIES = frozenset(
 )
 
 
-# ── 原 utils.py ────────────────────────────────────────────────────────────
+# Legacy utils.py
 
 
 def in_blender() -> bool:
@@ -181,10 +181,10 @@ def combined_aabb(objs):
 
 def combined_aabb_root_local(root, mesh_objs) -> Tuple[Any, Any]:
     """
-    将子树内各 MESH 的**已求值**顶点变到 **root 的局部坐标系**，再合并为轴对齐 min/max。
+    Transform each subtree MESH's **evaluated** vertices into **root local space**, then merge axis-aligned min/max.
 
-    ``dimensions = hi - lo`` 的分量沿 **根物体局部 X/Y/Z**，与根上 yaw 对齐，避免世界系 AABB
-    在斜放家具上沿世界轴「外接膨胀」。若 ``matrix_world`` 不可逆则回退为 ``combined_aabb``（世界系）。
+    Components of ``dimensions = hi - lo`` align with **root-local X/Y/Z**, matching root yaw and avoiding
+    world-axis AABB **padding** on tilted furniture. If ``matrix_world`` is singular, falls back to ``combined_aabb`` (world space).
     """
     import bpy
     import mathutils
@@ -276,7 +276,7 @@ def extract_room_type(blend_path: str) -> str:
     return parts[0] if parts else "unknown"
 
 
-# ── 原 identify_room.py ─────────────────────────────────────────────────────
+# Legacy identify_room.py
 
 RENDER_CAMERA_NAME = "camera_0_0"
 
@@ -328,11 +328,11 @@ def identify_camera_room() -> Optional[Dict[str, Any]]:
     }
 
 
-# ── 资产收集（与 GT 同源）──────────────────────────────────────────────────
+# Asset collection (same source as GT)
 
 
 def collect_assets() -> list:
-    """``unique_assets`` 下顶层物体，排除结构/门窗/踢脚线等子 collection（与 GT 资产集一致）。"""
+    """Top-level objects under ``unique_assets``, excluding structure/doors/windows/skirting collections (same set as GT)."""
     import bpy
 
     ua = bpy.data.collections.get("unique_assets")
@@ -357,7 +357,7 @@ def collect_assets() -> list:
 
 
 def _load_instance_segmentation_u16(path: str):
-    """读取实例分割 PNG，须保留整型像素（16-bit PNG 仍为整型数组，不做 8-bit 衰减读取）。"""
+    """Load instance-segmentation PNG preserving integer samples (16-bit stays integral; no lossy 8-bit read)."""
     import numpy as np
 
     if not os.path.isfile(path):
@@ -390,13 +390,13 @@ def _load_instance_segmentation_u16(path: str):
         except Exception as e:
             err_chain.append(e)
             raise RuntimeError(
-                f"无法读取实例分割图（须 uint16/整型）: {path}；已尝试 imageio、cv2.IMREAD_UNCHANGED、PIL"
+                f"Cannot read instance segmentation (expected uint16 / integer): {path}; tried imageio, cv2.IMREAD_UNCHANGED, PIL"
             ) from (err_chain[0] if err_chain else None)
     if arr.ndim == 3:
         arr = arr[:, :, 0]
     if not np.issubdtype(arr.dtype, np.integer):
         raise TypeError(
-            f"{path}: 实例分割须为整型 id 图，当前 dtype={arr.dtype}"
+            f"{path}: instance segmentation must be an integer ID map; got dtype={arr.dtype}"
         )
     return arr
 
@@ -405,24 +405,24 @@ def _load_object_index_map(blend_dir: str) -> Dict[str, str]:
     path = os.path.join(blend_dir, METADATA_JSON)
     if not os.path.isfile(path):
         raise MissingMetadataInstanceMapError(
-            f"缺少 {METADATA_JSON}（objects_in_view 依赖 instance_map.object_index_map）: {path}"
+            f"Missing {METADATA_JSON} (objects_in_view requires instance_map.object_index_map): {path}"
         )
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, json.JSONDecodeError) as e:
         raise MissingMetadataInstanceMapError(
-            f"无法解析 {path}: {e}"
+            f"Cannot parse {path}: {e}"
         ) from e
     inst = data.get("instance_map")
     if not isinstance(inst, dict):
         raise MissingMetadataInstanceMapError(
-            f"{path}: 缺少或类型错误: instance_map（须为 object）"
+            f"{path}: missing or invalid instance_map (expected object)"
         )
     oim = inst.get("object_index_map")
     if not isinstance(oim, dict) or len(oim) == 0:
         raise MissingMetadataInstanceMapError(
-            f"{path}: instance_map.object_index_map 须为非空 dict，当前={oim!r}"
+            f"{path}: instance_map.object_index_map must be a non-empty dict; got {oim!r}"
         )
     return {str(k): str(v) for k, v in oim.items()}
 
@@ -442,7 +442,7 @@ def _build_metadata_base_to_gt_id(blend_dir: str) -> Dict[str, str]:
     path = os.path.join(blend_dir, GT_JSON_NAME)
     if not os.path.isfile(path):
         raise FileNotFoundError(
-            f"缺少 {GT_JSON_NAME}，无法将 metadata 物体名对齐 GT id: {path}"
+            f"Missing {GT_JSON_NAME}; cannot align metadata object names to GT ids: {path}"
         )
     with open(path, encoding="utf-8") as f:
         gt_data = json.load(f)
@@ -457,8 +457,8 @@ def _build_metadata_base_to_gt_id(blend_dir: str) -> Dict[str, str]:
         b = _gt_id_to_metadata_base(gid)
         if b in base_to_id and base_to_id[b] != gid:
             print(
-                f"[extract_camview] WARN: metadata-base 冲突 {b!r} -> "
-                f"保留 {base_to_id[b]!r}，忽略 {gid!r}"
+                f"[extract_camview] WARN: metadata base collision {b!r} -> "
+                f"keeping {base_to_id[b]!r}, ignoring {gid!r}"
             )
         elif b not in base_to_id:
             base_to_id[b] = gid
@@ -482,7 +482,7 @@ def _object_index_counts_from_png(seg_path: str) -> Dict[int, int]:
 def _objects_from_gt_for_names(
     blend_dir: str, root_names_in_order: List[str]
 ) -> List[Dict[str, Any]]:
-    """按 ``root_names_in_order`` 从 ``GT.json`` 拷贝 ``id`` 匹配的物体条目。"""
+    """Copy object rows from ``GT.json`` whose ``id`` matches ``root_names_in_order``."""
     path = os.path.join(blend_dir, GT_JSON_NAME)
     if not os.path.isfile(path):
         print(f"[extract_camview] WARN: missing {GT_JSON_NAME}, objects=[]")
@@ -512,14 +512,14 @@ def _objects_from_gt_for_names(
 
 def build_instance_seg_view_payload(scene_id: str, blend_dir: str) -> Dict[str, Any]:
     """
-    自 ``metadata.json`` 的 ``object_index_map`` + ``instance_segmentation.png``（整型 / uint16）
-    统计各类 id 像素数；``>= MIN_VISIBLE_PIXELS``、map 可查且 metadata 名与 ``GT.json`` id
-    对齐的记入 in-view（等价于镜内像素 ∩ 全局 instance 表 ∩ GT 有效物体）。不读取 ``bpy.object.pass_index``。
+    From ``metadata.json`` ``object_index_map`` and integer / uint16 ``instance_segmentation.png``,
+    count pixels per pass index; entries with ``>= MIN_VISIBLE_PIXELS``, resolvable map keys, and metadata names
+    aligned to ``GT.json`` ids are in-view (in-frustum pixels ∩ global instance table ∩ valid GT objects). Does not use ``bpy.object.pass_index``.
     """
     seg_path = os.path.join(blend_dir, INSTANCE_SEGMENTATION_PNG)
     if not os.path.isfile(seg_path):
         raise FileNotFoundError(
-            f"缺少 {INSTANCE_SEGMENTATION_PNG}，无法构建 objects_in_view: {seg_path}"
+            f"Missing {INSTANCE_SEGMENTATION_PNG}; cannot build objects_in_view: {seg_path}"
         )
 
     object_index_map = _load_object_index_map(blend_dir)
@@ -534,16 +534,16 @@ def build_instance_seg_view_payload(scene_id: str, blend_dir: str) -> Dict[str, 
         meta_name = object_index_map.get(key)
         if meta_name is None:
             print(
-                f"[extract_camview] WARN: pass_index {pi} ({pc}px) 不在 "
-                f"object_index_map 中，跳过"
+                f"[extract_camview] WARN: pass_index {pi} ({pc}px) not in "
+                f"object_index_map, skipping"
             )
             continue
         mb = _metadata_label_to_base(meta_name)
         gid = base_to_gt.get(mb)
         if gid is None:
             print(
-                f"[extract_camview] WARN: metadata 物体 {meta_name!r} "
-                f"(base {mb!r}) 无对应 GT id，跳过"
+                f"[extract_camview] WARN: metadata object {meta_name!r} "
+                f"(base {mb!r}) has no matching GT id, skipping"
             )
             continue
         visible_gt_ids.add(gid)
@@ -559,7 +559,7 @@ def build_instance_seg_view_payload(scene_id: str, blend_dir: str) -> Dict[str, 
     )
 
     print(
-        f"[extract_camview] metadata + instance seg: {len(names_ordered)} GT 物体 in-view "
+        f"[extract_camview] metadata + instance seg: {len(names_ordered)} GT objects in-view "
         f"(≥{MIN_VISIBLE_PIXELS}px, GT-aligned), "
         f"{len(categories)} categories"
     )

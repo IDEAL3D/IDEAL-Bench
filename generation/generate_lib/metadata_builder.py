@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-从 scene.blend、Objects*.json 构建 ``metadata.json`` 字典（供 ``core`` 等 ``json.dumps`` 落盘）。
+Build the ``metadata.json`` payload dict from ``scene.blend`` and Infinigen ``Objects*.json``.
 
-相机：仅 ``blender_dump_metadata.py`` 子进程或当前进程 ``bpy``；失败则抛错，不写占位数据。
+Camera fields come only from an in-process ``bpy`` read or from ``blender_dump_metadata.py`` in a
+Blender subprocess. On failure, an error is raised; no placeholder camera data is written.
 """
 
 from __future__ import annotations
@@ -37,7 +38,7 @@ def _attach_render_rotation_fields(render: dict) -> dict:
 
 
 def build_instance_map_block(object_index_map: dict[str, str]) -> dict:
-    """Per-scene ``instance_map`` payload；字段语义见 ``docs/METADATA_SCHEMA.md``。"""
+    """``instance_map`` fragment for one scene; field semantics in ``docs/METADATA_SCHEMA.md``."""
     return {
         "format": "grayscale_uint16",
         "bits_per_channel": 16,
@@ -47,7 +48,7 @@ def build_instance_map_block(object_index_map: dict[str, str]) -> dict:
 
 
 def _object_index_map_from_objects_json(data: dict) -> dict[str, str]:
-    """由 Infinigen ``Objects*.json`` 构造 ``object_index_map``：凡 ``object_index > 0`` 的物体均写入，不做关键词筛选。"""
+    """Build ``object_index_map`` from Infinigen ``Objects*.json``: every entry with object_index > 0."""
     out: dict[str, str] = {}
     counts: dict[str, int] = {}
     for name in sorted(data.keys()):
@@ -81,14 +82,14 @@ def _find_blender_executable() -> str:
     if "blender" in ex.lower():
         return ex
     raise RuntimeError(
-        "未找到 blender 可执行文件：请将 blender 加入 PATH，或设置环境变量 BLENDER=/path/to/blender"
+        "Blender executable not found: add blender to PATH or set BLENDER=/path/to/blender"
     )
 
 
 def _run_blender_dump_render_metadata(blend_path: Path, out_json: Path) -> None:
     dump_script = SCRIPT_DIR / "blender_dump_metadata.py"
     if not dump_script.is_file():
-        raise FileNotFoundError(f"缺少 {dump_script}")
+        raise FileNotFoundError(f"Missing {dump_script}")
     blender = _find_blender_executable()
     cmd = [
         blender,
@@ -126,34 +127,39 @@ def _render_metadata_from_bpy_open(blend_path: Path) -> dict | None:
             "sensor_width": float(cam.data.sensor_width),
         }
     except Exception as e:
-        logger.warning("bpy 打开 scene.blend 读取相机失败: %s", e)
+        logger.warning("bpy failed to open scene.blend for camera metadata: %s", e)
         return None
 
 
-def resolve_render_metadata(blend_path: Path, args) -> dict:
-    """仅从 blend 读取相机：先 ``blender_dump_metadata.py`` 子进程，再当前进程 ``bpy``；均失败则抛错。"""
+def resolve_render_metadata(blend_path: Path) -> dict:
+    """Read active camera and render resolution from ``blend_path``.
+
+    Tries in-process ``bpy`` first, then a Blender subprocess running ``blender_dump_metadata.py``.
+    Raises ``RuntimeError`` if both fail.
+    """
     blend_path = Path(blend_path)
     tmp_json = blend_path.parent / ".camera_fragment.json"
+
+    meta_bpy = _render_metadata_from_bpy_open(blend_path)
+    if meta_bpy is not None:
+        logger.info("metadata.render: in-process bpy")
+        return _attach_render_rotation_fields(meta_bpy)
+
     err_sub: Exception | None = None
     try:
         _run_blender_dump_render_metadata(blend_path, tmp_json)
         meta = json.loads(tmp_json.read_text(encoding="utf-8"))
-        logger.info("metadata.render：blender 子进程 dump（含 sensor_width）")
+        tmp_json.unlink(missing_ok=True)
+        logger.info("metadata.render: blender subprocess dump")
         return _attach_render_rotation_fields(meta)
     except Exception as e:
         err_sub = e
-        logger.warning("blender 子进程导出相机失败: %s", e)
-    finally:
         tmp_json.unlink(missing_ok=True)
-
-    meta = _render_metadata_from_bpy_open(blend_path)
-    if meta is not None:
-        logger.info("metadata.render：当前进程 bpy")
-        return _attach_render_rotation_fields(meta)
+        logger.warning("blender subprocess camera dump failed: %s", e)
 
     raise RuntimeError(
-        f"无法读取相机 metadata（子进程与 bpy 均失败），blend={blend_path}；"
-        f"子进程错误: {err_sub!r}"
+        f"Could not read camera metadata (bpy and subprocess both failed) for blend={blend_path}; "
+        f"subprocess error: {err_sub!r}"
     )
 
 
@@ -162,12 +168,18 @@ def build_metadata(
     canonical_room_type: str,
     blend_path: Path,
     objects_json_path: Path,
-    args,
 ) -> dict:
-    """主入口：返回完整 metadata 字典，供调用方 ``json.dumps``。"""
+    """Assemble scene metadata: identifiers, per-view render/camera block, and instance index map.
+
+    **Inputs:** stable ``scene_id``, canonical room type, path to ``scene.blend``, path to
+    Infinigen ``Objects*.json`` for object_index metadata.
+
+    **Output:** a dict with keys ``scene_id``, ``room_type``, ``render`` (camera + resolution),
+    and ``instance_map`` (uint16 index map description and ``object_index_map``).
+    """
     data = json.loads(Path(objects_json_path).read_text(encoding="utf-8"))
     index_map = _object_index_map_from_objects_json(data)
-    render_meta = resolve_render_metadata(Path(blend_path), args)
+    render_meta = resolve_render_metadata(Path(blend_path))
     return {
         "scene_id": scene_id,
         "room_type": canonical_room_type,

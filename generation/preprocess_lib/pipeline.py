@@ -1,7 +1,7 @@
 """
-单场景 Blender 内管线：``GT.json``、``objects_in_view.json``（内含家具重叠摘要）、npz 清理。
+Single-scene Blender pipeline: ``GT.json``, ``objects_in_view.json`` (with furniture overlap summary), npz cleanup.
 
-仅在带 ``bpy`` 的子进程中运行（由 ``core`` 启动 ``preprocess.py --blend`` 触发）。
+Runs only in a subprocess where ``bpy`` is available (``core`` invokes ``preprocess.py --blend``).
 """
 
 from __future__ import annotations
@@ -63,7 +63,7 @@ def run_pipeline(
     if write_semantics:
         cam = metrics.get("cam_obj")
         if cam is not None:
-            _, overlap_pc = write_info_json_v2(output_dir, cam_obj=cam)
+            _, overlap_pc = write_info_json_v2(output_dir)
             result["overlap_pair_count"] = overlap_pc
             if overlap_pc is not None and overlap_pc > 0:
                 print(
@@ -81,7 +81,7 @@ def run_pipeline(
 
 
 def _remove_npz_files(output_dir: str) -> None:
-    """删除目录内 *.npz。"""
+    """Delete all ``*.npz`` files directly under ``output_dir``."""
     pattern = os.path.join(output_dir, "*.npz")
     for p in glob.glob(pattern):
         try:
@@ -89,7 +89,3 @@ def _remove_npz_files(output_dir: str) -> None:
             print(f"[pipeline] removed {os.path.basename(p)}")
         except OSError as e:
             print(f"[WARN] could not remove {p}: {e}")
-
-
-# 兼容旧名（本模块内曾叫 _run_pipeline）
-_run_pipeline = run_pipeline

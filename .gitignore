@@ -3,6 +3,7 @@ data/
 result/
 api/
 tools/
+QUICKSTART/
 
 # Python
 __pycache__/

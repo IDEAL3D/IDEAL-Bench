@@ -1,15 +1,20 @@
-# 生成与预处理（`generation/`）
+# `generation/`：生成与预处理
 
-两条**并列**流程，互不嵌套：
+两条管线**并列**，代码互不嵌套：
 
-| 入口 | 库目录 | 说明 |
-|------|--------|------|
-| **`generate.py`** | **`generate_lib/`** | Infinigen 单房间合成与渲染（`core.py` 等） |
-| **`preprocess.py`** | **`preprocess_lib/`** | 对已有 `scene.blend` 做 GT / info 等预处理 |
+| 入口 | 库 | 作用 |
+|------|-----|------|
+| [`generate.py`](generate.py) | [`generate_lib/`](generate_lib/) | Infinigen **矩形单房间**：合成 + 渲染，收尾四文件 |
+| [`preprocess.py`](preprocess.py) | [`preprocess_lib/`](preprocess_lib/) | 对已有 `scene.blend` 产出 GT / `objects_in_view` 等 |
 
-- **`tools/fix_existing_scene.py`**（仓库根 [`../tools/fix_existing_scene.py`](../tools/fix_existing_scene.py)）：一次性为旧 `SCENES_RAW` 补 `instance_segmentation` / `metadata`（内部调用 `generate_lib.core`）；数据修完后可删，无其它模块依赖。
+**依赖与约定**
 
-路径常量（`INFINIGEN_IDL3D_ROOT`、`SCENES_*`）见仓库根 **`../configs/infinigen_paths.py`**。房型 canonical 列表：**`../configs/constant.py`**（`ROOM_TYPES`）；新生成目录名为 `{canonical}_s{seed}`，旧批次旧名并存、无兼容脚本。
+- 路径：`INFINIGEN_IDL3D_ROOT`、`SCENES_*` 见 [`../configs/infinigen_paths.py`](../configs/infinigen_paths.py)；房型 canonical 见 [`../configs/constant.py`](../configs/constant.py)（`ROOM_TYPES`）。新场景目录名一般为 `{canonical}_s{seed}`。
+- **如何运行**（参数、tmux、`--scenes-raw`、manifests、`core.py` 细节）：[**`../QUICKSTART/generate.md`**](../QUICKSTART/generate.md)。
+- **生成侧模块关系**（`core` / `metadata_builder` 等）：[`generate_lib/README.md`](generate_lib/README.md)。
+- `metadata.json` 字段约定：[`../docs/METADATA_SCHEMA.md`](../docs/METADATA_SCHEMA.md)。
+- 单房 box 局限：[`../docs/LIMITATION.md`](../docs/LIMITATION.md)。
 
-- 场景 **`metadata.json`** 字段含义（英文约定，不写进 JSON 正文）：**[`../docs/METADATA_SCHEMA.md`](../docs/METADATA_SCHEMA.md)**
-- 详细脚本说明：**[`generate_lib/README.md`](generate_lib/README.md)**（生成侧；内含与 `preprocess` 的衔接说明）。
+**其它**
+
+- 仓库根的 [`../tools/fix_existing_scene.py`](../tools/fix_existing_scene.py)：为旧 RAW 补 `instance_segmentation` / `metadata`（调 `generate_lib.core`），非主链路。

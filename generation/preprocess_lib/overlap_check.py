@@ -1,7 +1,7 @@
 """
-``unique_assets`` 顶层家具两两重叠估计；由 ``extract_info`` 将摘要合并进 ``objects_in_view.json``（旧管线曾为独立 ``furniture_overlap.json`` / ``info.json`` 内嵌块）。
+Pairwise overlap estimate for top-level furniture under ``unique_assets``; ``extract_info`` merges the summary into ``objects_in_view.json`` (legacy pipeline used a standalone ``furniture_overlap.json`` or an ``info.json`` block).
 
-依赖 ``extract_camview`` 的资产枚举与 AABB；由 ``extract_info`` 调用 ``compute_furniture_overlap``。
+Uses asset enumeration and AABB from ``extract_camview``; invoked by ``extract_info`` as ``compute_furniture_overlap``.
 """
 
 from __future__ import annotations
@@ -10,19 +10,19 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .extract_camview import collect_assets, combined_aabb, factory_to_category
 
-# 家具两两重叠：体素网格（世界轴对齐）；单对最大体素数以控耗时
+# Pairwise overlap: world-axis-aligned voxel grid; cap voxels per pair for runtime
 OVERLAP_MAX_VOXELS_PER_PAIR = 120_000
 OVERLAP_MIN_VOXEL_M = 0.015
 OVERLAP_MIN_VOLUME_M3 = 1e-6
-# 体素法在「开放格架 / 薄壳 / 非闭合 mesh」上奇偶射线会失效；用顶点–对侧表面距离回退
+# Voxel inside test fails on open racks / thin shells / non-watertight mesh; vertex-to-surface distance fallback
 OVERLAP_PROXIMITY_THRESHOLD_M = 0.045
 OVERLAP_PROXIMITY_MAX_VERTS = 600
-# 仅由回退检出的对：报告体积用占位值（满足 min_reported 阈值即可）
+# Pairs found only via fallback: report a placeholder volume (still above min_reported)
 OVERLAP_PROXIMITY_REPORT_VOLUME_M3 = 2e-5
-# 床 + 床垫视为一体，不计入穿模对（与 GT 顶层资产类别一致）
+# Bed + mattress treated as one asset; skip penetrant pair (matches GT top-level categories)
 OVERLAP_SKIP_CATEGORY_PAIRS = frozenset({frozenset({"bed", "mattress"})})
-# 不参与两两重叠检测的类别（与 GT 顶层 ``factory_to_category`` 名一致）
-# 地毯/墙饰/镜子 + 围护与洞口（即便个别场景下仍挂在 unique_assets 顶层也跳过）
+# Categories excluded from pairwise overlap (names match GT top-level ``factory_to_category``)
+# Rugs / wall art / mirrors + envelope and openings (skip even if still under unique_assets top level)
 OVERLAP_EXCLUDE_CATEGORIES = frozenset(
     {
         "rug",
@@ -47,11 +47,11 @@ OVERLAP_EXCLUDE_CATEGORIES = frozenset(
 )
 
 
-# ── unique_assets 顶层家具：AABB → Boolean / 体素 / 顶点距离 ────────────────
+# Top-level unique_assets furniture: AABB → Boolean / voxels / vertex distance
 
 
 def _collect_mesh_bvhs_world(root) -> List:
-    """每个 MESH 子对象一棵世界空间 BVHTree（与 ``collect_assets`` 根一致）。"""
+    """One world-space BVHTree per MESH descendant (consistent with ``collect_assets`` roots)."""
     import bpy
     from mathutils.bvhtree import BVHTree
 
@@ -69,7 +69,7 @@ def _collect_mesh_bvhs_world(root) -> List:
 
 
 def _point_inside_bvh(bvh, co) -> bool:
-    """闭网格奇偶射线法；``co`` 为世界坐标。"""
+    """Odd-even ray test for closed mesh; ``co`` is world position."""
     from mathutils import Vector
 
     direction = Vector((1.0, 0.0, 0.0))
@@ -92,7 +92,7 @@ def _point_inside_asset(bvhs, co) -> bool:
 
 
 def _min_dist_to_bvhs(co: Tuple[float, float, float], bvhs) -> float:
-    """点到多棵 BVHTree 所代表 mesh 表面的最短距离。"""
+    """Shortest distance from point to mesh surfaces represented by BVHTrees."""
     from mathutils import Vector
 
     v = Vector(co)
@@ -113,7 +113,7 @@ def _min_dist_to_bvhs(co: Tuple[float, float, float], bvhs) -> float:
 
 
 def _world_vertices_sampled(root, max_count: int) -> List[Tuple[float, float, float]]:
-    """根物体子树内所有 mesh 顶点（世界坐标），过多时按步长均匀抽样（可复现）。"""
+    """All mesh vertices under root in world space; if too many, stride-sample deterministically."""
     import bpy
 
     dg = bpy.context.evaluated_depsgraph_get()
@@ -145,7 +145,7 @@ def _ensure_entry_bvhs(e: Dict[str, Any]) -> List:
 def _pair_overlap_vertex_proximity(
     ea: Dict[str, Any], eb: Dict[str, Any], threshold_m: float
 ) -> bool:
-    """任一侧抽样顶点与另一侧 mesh 表面距离 < threshold 则视为几何穿透/贴合（体素法补充）。"""
+    """True if sampled vertices on either side lie within ``threshold_m`` of the opposite mesh surface (voxel supplement)."""
     _ensure_entry_bvhs(ea)
     _ensure_entry_bvhs(eb)
     verts_a = _world_vertices_sampled(ea["root"], OVERLAP_PROXIMITY_MAX_VERTS)
@@ -162,7 +162,7 @@ def _pair_overlap_vertex_proximity(
 def _aabb_intersection(
     lo_a, hi_a, lo_b, hi_b
 ) -> Optional[Tuple[Any, Any]]:
-    """两轴对齐盒的相交子盒；不相交则 ``None``。"""
+    """Intersection of two axis-aligned boxes; ``None`` if disjoint."""
     from mathutils import Vector
 
     lo = Vector(
@@ -185,7 +185,7 @@ def _aabb_intersection(
 
 
 def _merge_asset_world_mesh_data(root, mesh_name: str):
-    """将根物体子树内所有 MESH 合并为**世界坐标**下的单块 mesh 数据（物体原点处）。"""
+    """Merge all subtree MESH geometry into one mesh datablock expressed in **world space** at object origin."""
     import bmesh
     import bpy
 
@@ -223,12 +223,11 @@ def _merge_asset_world_mesh_data(root, mesh_name: str):
 
 def _boolean_intersection_volume_m3(root_a, root_b) -> Optional[float]:
     """
-    临时物体 + Boolean(INTERSECT, EXACT) 求交体积；失败返回 ``None``。
-    交为空（桌椅 AABB 重叠但 mesh 不交）返回 ``0.0``。
+    Temporary objects + Boolean(INTERSECT, EXACT) intersection volume; returns ``None`` on failure.
+    Empty intersection (e.g. chair/table AABB overlap but meshes disjoint) returns ``0.0``.
 
-    **不修改、不删除场景资产**：``root_a``/``root_b`` 仅用于 ``_merge_asset_world_mesh_data``
-    读取几何并 **新建** mesh；布尔只作用于 ``_ov_*`` 临时物体。``finally`` 里删除的永远是
-    这些临时 object/mesh，与原装家具 datablock 无关。
+    **Does not modify scene assets**: ``root_a``/``root_b`` only feed ``_merge_asset_world_mesh_data`` to **allocate** mesh data;
+    Boolean runs on ``_ov_*`` temp objects only. ``finally`` removes those temp objects/meshes, not original furniture datablocks.
     """
     import bmesh
     import bpy
@@ -291,7 +290,7 @@ def _boolean_intersection_volume_m3(root_a, root_b) -> Optional[float]:
         print(f"[overlap_check] boolean overlap skipped: {ex}")
         return None
     finally:
-        # 勿在 modifier / remove 之后持有 Mesh RNA 引用再访问 .name（会 ReferenceError）
+        # Do not hold Mesh RNA across modifier/remove then access .name (ReferenceError).
         for ob in (obj_a, obj_b):
             if ob is None:
                 continue
@@ -309,9 +308,9 @@ def _boolean_intersection_volume_m3(root_a, root_b) -> Optional[float]:
 
 def _purge_furniture_overlap_temp_collection() -> None:
     """
-    重叠检测结束后拆掉隐藏集合 ``_FurnitureOverlapTemp`` 及其中残留物。
+    After overlap detection, remove hidden collection ``_FurnitureOverlapTemp`` and any leftovers.
 
-    仅清理本模块创建的临时数据；**不**遍历或删除 ``unique_assets`` 下的原装物体。
+    Cleans only temporaries created here; **does not** traverse or delete original objects under ``unique_assets``.
     """
     import bpy
 
@@ -328,7 +327,7 @@ def _purge_furniture_overlap_temp_collection() -> None:
                 bpy.data.meshes.remove(me)
             except ReferenceError:
                 pass
-    # bpy_prop_collection.__contains__ 只接受集合名字符串，不能写 ``col in root.children``
+    # bpy_prop_collection.__contains__ expects collection name strings, not ``col in root.children``
     if col.name in root.children:
         root.children.unlink(col)
     try:
@@ -344,7 +343,7 @@ def _overlap_volume_voxels(
     hi,
     voxel_size: float,
 ) -> Tuple[float, int]:
-    """在 ``[lo,hi]`` 上均匀立方体素，数同时在两资产 mesh 内的体素；体积 = 计数 × s³。"""
+    """Uniform cube voxels on ``[lo,hi]``; count samples inside both asset meshes; volume = count × cell volume."""
     import math
 
     from mathutils import Vector
@@ -358,7 +357,7 @@ def _overlap_volume_voxels(
 
     s = float(voxel_size)
     s = max(s, OVERLAP_MIN_VOXEL_M)
-    # 控制体素总数
+    # Cap total voxel count
     est = int(math.ceil(dx / s) * math.ceil(dy / s) * math.ceil(dz / s))
     if est > OVERLAP_MAX_VOXELS_PER_PAIR and vol_box > 0:
         s = max(OVERLAP_MIN_VOXEL_M, (vol_box / OVERLAP_MAX_VOXELS_PER_PAIR) ** (1.0 / 3.0))
@@ -397,11 +396,11 @@ def _skip_overlap_pair(cat_a: str, cat_b: str) -> bool:
 
 def compute_furniture_overlap() -> Dict[str, Any]:
     """
-    ``unique_assets`` 顶层资产：先过滤类别，再 **O(n²)** 世界 AABB 两两相交；
-    仅对相交对做 **Boolean INTERSECT** 体积；布尔失败时再体素 + 顶点距离回退。
-    布尔体积 < 阈值视为无穿模（如桌椅 AABB 叠但 mesh 不交）。
+    Top-level ``unique_assets`` entries: filter categories, then **O(n²)** world AABB intersection;
+    for intersecting pairs, **Boolean INTERSECT** volume; on Boolean failure, voxel grid + vertex-distance fallback.
+    Boolean volume below threshold counts as no penetration (e.g. stacked AABBs but separated meshes).
 
-    全程不删除原装资产；结束后调用 ``_purge_furniture_overlap_temp_collection`` 清掉临时集合。
+    Never deletes original assets; ends with ``_purge_furniture_overlap_temp_collection`` for temporaries.
     """
     try:
         return _compute_furniture_overlap_impl()

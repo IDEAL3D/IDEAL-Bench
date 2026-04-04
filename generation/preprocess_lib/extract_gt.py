@@ -1,13 +1,13 @@
 """
-从已打开的 Blender 场景写出 ``GT.json``（单房 box 管线）。
+Write ``GT.json`` from the currently opened Blender scene (single-room box pipeline).
 
-枚举 ``unique_assets`` 下、排除结构/门窗等后的顶层资产。
+Enumerates top-level assets under ``unique_assets`` after excluding structure, doors, windows, etc.
 
-- ``scene_id``：场景目录名（与 ``objects_in_view.json`` 一致）。
-- ``position``：根物体 ``matrix_world.translation``。
-- ``dimensions``：子树 MESH 在**资产根局部系**下合并 AABB 的 ``[dx,dy,dz]``（``combined_aabb_root_local``）。约定见仓库文档（如 ``IDL3D/docs/geometric_rules_floor.md``）。
-- ``rotation_yaw``：语义前向相对 +Y，``atan2(-fx,fy)`` 度；见 ``semantic_yaw_degrees``。类别 ``blackboard`` 在无 Front 标签时用**根局部 +Y** 回退（非默认 +X）。类别 ``side_table``（``SideTableFactory`` 默认 ``(w,w,h)`` 方形台面）在水平 ``dimensions`` 近似正方形时**固定为 0**。灯具（``lamp`` / ``*_lamp``）与类别名中含 ``_plant_`` 的绿植（如 ``large_plant_container``）**无稳定语义朝向**，写入 JSON **``null``**（评测应跳过 yaw）。
-- ``resolve_room_metrics_box``：从 ``unique_assets:room_floor`` 等推算 ``scene.room.size`` 的 ``[W,D,H]``（原 ``room_geometry.py``）。
+- ``scene_id``: scene directory name (aligned with ``objects_in_view.json``).
+- ``position``: root object ``matrix_world.translation``.
+- ``dimensions``: merged subtree MESH AABB in **asset-root local space** as ``[dx,dy,dz]`` (``combined_aabb_root_local``); see repo docs (e.g. ``IDL3D/docs/geometric_rules_floor.md``).
+- ``rotation_yaw``: semantic forward vs. +Y, ``atan2(-fx,fy)`` in degrees; see ``semantic_yaw_degrees``. Category ``blackboard`` falls back to **root-local +Y** when Subpart.Front is missing (not default +X). Category ``side_table`` (``SideTableFactory`` default ``(w,w,h)`` square top) **forces 0** when horizontal ``dimensions`` are nearly square. Lamps (``lamp`` / ``*_lamp``) and potted plants with ``_plant_`` in the category name have **no stable semantic heading**; JSON stores **`null`** (eval should skip yaw).
+- ``resolve_room_metrics_box``: derives ``scene.room.size`` ``[W,D,H]`` from ``unique_assets:room_floor`` et al. (legacy ``room_geometry.py`` role).
 """
 
 from __future__ import annotations
@@ -20,9 +20,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 ROOM_FLOOR_COLLECTION = "unique_assets:room_floor"
 
-# 无 Subpart.Front 时默认用根局部 +X 投 XY；黑板 mesh 常无标签，其板面法向与 +X 回退不一致，改为 +Y（仅 GT，不改 Infinigen）。
+# Without Subpart.Front, default projects root-local +X onto XY; blackboard meshes often lack tags—board normal disagrees with +X fallback, so use +Y (GT only; does not alter Infinigen).
 BLACKBOARD_CATEGORY = "blackboard"
-# SideTableFactory(infinigen …/tables/dining_table.py) 默认 dimensions=(w,w,h)，水平面为正方形，yaw 在 90° 倍数下无区别。
+# SideTableFactory (…/tables/dining_table.py) defaults dimensions=(w,w,h): square horizontal footprint, yaw indistinguishable at 90° steps.
 SIDE_TABLE_CATEGORY = "side_table"
 
 
@@ -40,6 +40,12 @@ _GENERATION_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _GENERATION_DIR not in sys.path:
     sys.path.insert(0, _GENERATION_DIR)
 
+_IDL3D_ROOT = os.path.dirname(_GENERATION_DIR)
+if _IDL3D_ROOT not in sys.path:
+    sys.path.insert(0, _IDL3D_ROOT)
+
+from configs.constant import ROOM_TYPES
+
 from preprocess_lib.extract_camview import (
     collect_assets,
     combined_aabb,
@@ -55,11 +61,19 @@ from preprocess_lib.extract_camview import (
 
 
 def room_type_from_scene_dir(scene_dir: str) -> str:
-    """``bedroom_small_s123`` → ``bedroom``；目录名按 ``_`` 取首段。"""
+    """First segment of directory name split on ``_``; must be in ``configs.constant.ROOM_TYPES``, else ``unknown``."""
     base = os.path.basename(os.path.normpath(scene_dir))
     if not base:
         return "unknown"
-    return base.split("_")[0].lower() or "unknown"
+    prefix = base.split("_")[0].lower() or "unknown"
+    if prefix == "unknown":
+        return "unknown"
+    if prefix in ROOM_TYPES:
+        return prefix
+    print(
+        f"[WARN] unexpected room_type prefix {prefix!r} from {scene_dir}, falling back to \"unknown\""
+    )
+    return "unknown"
 
 
 def _horizontal_unit(vx: float, vy: float) -> Optional[Tuple[float, float]]:
@@ -187,9 +201,10 @@ def room_metrics_from_floor_collection() -> Optional[Dict[str, Any]]:
 
 def resolve_room_metrics_box() -> Optional[Dict[str, Any]]:
     """
-    单房 box：优先 ``unique_assets:room_floor`` 合并 AABB 得 W/D/H；
-    否则相机射线找地板，再否则取最大 ``*.floor`` 网格。
-    返回 dict 含 ``cam_obj``（渲染相机）；``extract_info`` 写 info 时不再使用相机字段。
+    Single-room box: prefer merged AABB from ``unique_assets:room_floor`` for W/D/H;
+    else camera ray-cast to floor; else largest ``*.floor`` mesh.
+
+    Returned dict includes ``cam_obj`` (render camera). ``extract_info`` does not rely on camera fields when writing JSON.
     """
     import bpy
 

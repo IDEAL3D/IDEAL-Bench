@@ -78,6 +78,8 @@ ASSET_FILTER_KEYWORD = "spawn_asset"
 
 # --- instance_segmentation 标量备忘（1280×720，与聊天里抽查一致，便于今后调阈值）---
 # library_s1199075478：library_block_007 → pass_index 44，2514 px（metadata 名 library_block_007_001）。
+# bathroom_s776419884：SingleCabinetFactory(1614902).spawn_asset(3234064) → idx 45，15830 px。
+# openoffice_s643270004：SimpleBookcaseFactory(8462203).spawn_asset(8733329) → idx 67 为 1307 px；同 spawn_asset 另段 idx 69 本视角 0 px。
 # openoffice_s643270004：落地灯两段 mesh → idx 22 为 1445 px，idx 25 为 693 px。
 # office_s741428374：SimpleDeskFactory(...).002 → idx 75 为 113 px；SwivelChairFactory(...).002 → idx 115 为 266 px。
 # kitchen_s511530340：夹缝里 LargePlantContainer 曾约 149 px（极小块参考）。
