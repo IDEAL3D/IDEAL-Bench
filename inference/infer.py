@@ -11,13 +11,13 @@ import time
 _PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT not in sys.path:
     sys.path.insert(0, _PROJECT)
-from configs.constant import ROOM_TYPES  # noqa: E402
+from configs.constant import ROOM_TYPES, canonicalize_asset_category  # noqa: E402
 
 """
 infer.py — 业务逻辑（只做推理入口，不做评测）
 
 1. 扫描场景根目录下一级子目录；若存在约定图像文件名则作为候选任务（scene_id = 目录名）。
-2. 从同目录 `info.json` 读取 `categories_in_view` 作为 **assets_list**；并注入封闭的 **allowed_room_types**（与 `data/scenes2test` 场景目录前缀一致）。不传入 `asset_count_in_view` 等字段。
+2. 从同目录 `objects_in_view.json`（或旧版 `info.json`）读取 `categories_in_view` 作为 **assets_list**；并注入 **allowed_room_types**。
 3. 自 CSV 读取所选模型的 provider / 密钥等；将 system prompt + **user 文案（assets_list + allowed_room_types）** 与图像一并发送。**不把场景目录名传给模型**；Gemini 上传前将图片复制到临时中性路径，避免 API 侧携带含场景名的路径。
 4. 将模型返回解析为 JSON 并保存为 `result/{protocol}/{scene_id}/{model_id}.json`（仓库根下 `result/`，与同场景其它产物并列）。
 
@@ -38,7 +38,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(BASE_DIR)
 DEFAULT_SCENES_ROOT = os.path.join(PROJECT_DIR, "data", "scenes2test")
 SCENE_IMAGE_NAME = "image.png"
-INFO_JSON_NAME = "info.json"
+OBJECTS_IN_VIEW_JSON = "objects_in_view.json"
+INFO_JSON_LEGACY = "info.json"
 
 # 与生成管线 canonical 一致（`configs/constant.py` `ROOM_TYPES`）
 ALLOWED_ROOM_TYPES = tuple(ROOM_TYPES)
@@ -81,18 +82,32 @@ def load_system_prompt(path: str) -> str:
 
 def load_categories_in_view(scenes_root: str, scene_id: str) -> list[str] | None:
     """
-    读取场景目录下 info.json 的 categories_in_view。
-    返回 None：文件不存在或字段非列表；返回 []：列表为空（调用方应跳过）。
+    读取 ``objects_in_view.json``（或旧 ``info.json``）的 categories_in_view。
+    返回 None：两文件均无或字段非列表；返回 []：列表为空（调用方应跳过）。
     """
-    path = os.path.join(scenes_root, scene_id, INFO_JSON_NAME)
-    if not os.path.isfile(path):
+    base = os.path.join(scenes_root, scene_id)
+    path = None
+    for name in (OBJECTS_IN_VIEW_JSON, INFO_JSON_LEGACY):
+        cand = os.path.join(base, name)
+        if os.path.isfile(cand):
+            path = cand
+            break
+    if path is None:
         return None
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
     raw = data.get("categories_in_view")
     if not isinstance(raw, list):
         return None
-    return [str(x).strip() for x in raw if str(x).strip()]
+    seen: set[str] = set()
+    out: list[str] = []
+    for x in raw:
+        c = canonicalize_asset_category(str(x))
+        if not c or c in seen:
+            continue
+        seen.add(c)
+        out.append(c)
+    return out
 
 
 def build_user_prompt(assets_list: list[str]) -> str:
@@ -458,7 +473,7 @@ def main() -> None:
         cats = load_categories_in_view(scenes_root, scene_id)
         if cats is None:
             print(
-                f"⚠️ 跳过（缺少 {INFO_JSON_NAME} 或 categories_in_view 无效）: {scene_id}"
+                f"⚠️ 跳过（缺少 {OBJECTS_IN_VIEW_JSON} / {INFO_JSON_LEGACY} 或 categories_in_view 无效）: {scene_id}"
             )
             continue
         if not cats:
@@ -469,7 +484,7 @@ def main() -> None:
     if not valid_tasks:
         print(
             f"❌ 无可用场景：每个含 {SCENE_IMAGE_NAME} 的目录还需有效 "
-            f"{INFO_JSON_NAME} 与非空 categories_in_view。"
+            f"{OBJECTS_IN_VIEW_JSON}（或 {INFO_JSON_LEGACY}）与非空 categories_in_view。"
         )
         raise SystemExit(1)
 

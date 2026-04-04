@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-物体匹配：以 ``info.json`` 的 ``objects`` 为底稿，按 **category 队列** 将预测与槽位一一对应；
+物体匹配：以 ``objects_in_view.json``（或旧 ``info.json``）的 ``objects`` 为底稿，按 **category 队列** 将预测与槽位一一对应；
 多报则追加 ``placeholder_*``，未占用槽位将几何置 ``null``。
 
 不包含：将预测几何写回物体、与 ``GT.json`` 合并、写出 ``{model_id}_render.json``（见 ``compose.py``）。
@@ -39,7 +39,7 @@ def _placeholder_entry_from_prediction(pred: dict[str, Any], seq: int) -> dict[s
 
 
 def cache_from_info_objects(info_path: Path) -> dict[str, Any]:
-    """从 ``info.json`` 构造含 ``scene.objects`` 的工作层（深拷贝）。"""
+    """从侧车 JSON 构造含 ``scene.objects`` 的工作层（深拷贝）。"""
     with open(info_path, encoding="utf-8") as f:
         info: dict[str, Any] = json.load(f)
     objs = info.get("objects")

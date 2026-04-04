@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """
-从磁盘上的 GT.json / info.json（及 CSV 中的 overlap_count 回退）补写 preprocess_batches.jsonl 中的
-num_scenes_with_overlap、avg_gt_asset_count、avg_info_asset_count_in_view。
-
-场景目录默认在 SCENES_PROCESSED/<scene_id>/；若已 promote 到 IDL3D，可传 ``--extra-scene-root`` 指向
+从磁盘上的 GT.json / objects_in_view.json（及 CSV overlap_count 回退）补写 preprocess_batches.jsonl。
+场景目录默认在 ``INFINIGEN/SCENES_PROCESSED/<scene_id>/``；若已 promote，可传 ``--extra-scene-root`` 指向
 例如 ``IDL3D/data/scenes_v1``（脚本会按 ``<类别>/<scene_id>`` 查找，类别为 scene_id 里 ``_s`` 前一段）。
 
 用法::
@@ -147,8 +145,9 @@ def main() -> None:
     args = ap.parse_args()
 
     repo = Path(p._repo_root())
-    manifests_dir = repo / "SCENES_PROCESSED" / "manifests"
-    processed_root = repo / "SCENES_PROCESSED"
+    infinigen_processed = repo.parent / "INFINIGEN" / "SCENES_PROCESSED"
+    manifests_dir = infinigen_processed / "manifests"
+    processed_root = infinigen_processed
     jpath = manifests_dir / "preprocess_batches.jsonl"
 
     default_promote = repo / "data" / "scenes_v1"

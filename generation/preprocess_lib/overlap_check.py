@@ -1,5 +1,5 @@
 """
-``unique_assets`` 顶层家具两两重叠估计（与 ``info.json`` 的 ``furniture_overlap`` 对应）。
+``unique_assets`` 顶层家具两两重叠估计；由 ``extract_info`` 将摘要合并进 ``objects_in_view.json``（旧管线曾为独立 ``furniture_overlap.json`` / ``info.json`` 内嵌块）。
 
 依赖 ``extract_camview`` 的资产枚举与 AABB；由 ``extract_info`` 调用 ``compute_furniture_overlap``。
 """

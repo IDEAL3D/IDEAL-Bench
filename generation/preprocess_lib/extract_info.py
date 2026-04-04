@@ -1,11 +1,5 @@
 """
-组装并写出 ``info.json``（v2：无 ``image``；字段顺序与语义以本模块为准）。
-
-- **镜头 / 视锥内资产、内外参、与 GT 对齐的 ``objects``**：由 ``extract_camview`` 提供
-  （``build_camview_payload_v2`` 等）。
-- **家具体素重叠**：由 ``overlap_check.compute_furniture_overlap`` 提供。
-
-后续若有其它 ``info`` 块，在本模块合并进 ``build_info_payload_v2`` / ``write_info_json_v2`` 即可。
+组装并写出 ``objects_in_view.json``（含家具重叠摘要字段）；不单独写 ``furniture_overlap.json``。
 """
 
 from __future__ import annotations
@@ -14,64 +8,67 @@ import json
 import os
 from typing import Any, Dict, Optional, Tuple
 
-from .defaults import INFO_JSON_FILENAME
-from .extract_camview import build_camview_payload_v2, scene_id_from_output_dir
+from .defaults import (
+    FURNITURE_OVERLAP_JSON,
+    FURNITURE_OVERLAP_PAIR_COUNT_KEY,
+    FURNITURE_OVERLAP_VOLUME_TOTAL_KEY,
+    OBJECTS_IN_VIEW_JSON,
+)
+from .extract_camview import build_instance_seg_view_payload, scene_id_from_output_dir
 from .overlap_check import compute_furniture_overlap
 
 
-def build_info_payload_v2(
-    cam_obj,
-    blend_dir: str,
-    compute_overlap: bool = True,
-    *,
-    scene_id: str,
-) -> Dict[str, Any]:
-    """合并各子模块结果，得到完整 ``info.json`` 字典。"""
-    base = build_camview_payload_v2(cam_obj, scene_id, blend_dir)
-    if compute_overlap:
-        fo = compute_furniture_overlap()
-    else:
-        fo = {
-            "computed": False,
-            "reason": "disabled (--no-overlap)",
-        }
+def build_objects_in_view_only_payload(*, scene_id: str, blend_dir: str) -> Dict[str, Any]:
+    base = build_instance_seg_view_payload(scene_id, blend_dir)
     return {
         "scene_id": base["scene_id"],
+        "categories_in_view_count": base["categories_in_view_count"],
         "categories_in_view": base["categories_in_view"],
-        "asset_count_in_view": base["asset_count_in_view"],
+        "objects_in_view_count": base["objects_in_view_count"],
         "objects": base["objects"],
-        "furniture_overlap": fo,
-        "intrinsic": base["intrinsic"],
-        "extrinsic": base["extrinsic"],
-        "blender": base["blender"],
     }
 
 
 def write_info_json_v2(
-    blend_dir: str, cam_obj, compute_overlap: bool = True
+    blend_dir: str,
+    *,
+    cam_obj: Any = None,
 ) -> Tuple[str, Optional[int]]:
-    """写出 v2 版 ``info.json``；返回 ``(路径, pair_count)``。"""
-    path = os.path.join(blend_dir, INFO_JSON_FILENAME)
+    """写出 ``objects_in_view.json``（内含重叠 pair_count / volume 摘要）；删除遗留 ``furniture_overlap.json``。"""
+    _ = cam_obj
     sid = scene_id_from_output_dir(blend_dir)
-    payload = build_info_payload_v2(
-        cam_obj,
-        blend_dir,
-        compute_overlap=compute_overlap,
-        scene_id=sid,
-    )
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
-    fo = payload.get("furniture_overlap") or {}
+    payload = build_objects_in_view_only_payload(scene_id=sid, blend_dir=blend_dir)
+
+    fo = compute_furniture_overlap()
     n_pairs: Optional[int] = None
     if isinstance(fo, dict) and fo.get("computed") is True:
         n_pairs = int(fo.get("pair_count", 0))
+        payload[FURNITURE_OVERLAP_PAIR_COUNT_KEY] = n_pairs
+        vol_total = fo.get("overlap_volume_m3_total")
+        if vol_total is not None:
+            payload[FURNITURE_OVERLAP_VOLUME_TOTAL_KEY] = vol_total
+    else:
+        payload[FURNITURE_OVERLAP_PAIR_COUNT_KEY] = 0
+
+    path_ovie = os.path.join(blend_dir, OBJECTS_IN_VIEW_JSON)
+    with open(path_ovie, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+
+    path_fo = os.path.join(blend_dir, FURNITURE_OVERLAP_JSON)
+    try:
+        if os.path.isfile(path_fo):
+            os.unlink(path_fo)
+    except OSError:
+        pass
+
     print(
-        f"[extract_info] wrote {path}: {len(payload['categories_in_view'])} categories_in_view, "
-        f"asset_count_in_view={payload.get('asset_count_in_view', '?')}, "
-        f"objects={len(payload.get('objects') or [])}, "
-        f"furniture_overlap pairs={n_pairs if n_pairs is not None else 'n/a'}"
+        f"[extract_info] wrote {path_ovie}: categories_in_view_count="
+        f"{payload.get('categories_in_view_count', '?')}, "
+        f"objects_in_view_count={payload.get('objects_in_view_count', '?')}, "
+        f"len(objects)={len(payload.get('objects') or [])}, "
+        f"furniture_overlap pairs={n_pairs if n_pairs is not None else 0}"
     )
-    return path, n_pairs
+    return path_ovie, n_pairs
 
 
 write_info_json = write_info_json_v2

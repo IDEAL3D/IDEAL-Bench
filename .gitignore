@@ -2,6 +2,7 @@
 data/
 result/
 api/
+tools/
 
 # Python
 __pycache__/

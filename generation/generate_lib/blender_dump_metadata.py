@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-在 Blender 内运行：从已打开的 scene 写出相机与分辨率 JSON（供 generate_lib.core 写 metadata.json）。
+在 Blender 内运行：从已打开的 scene 写出相机与分辨率 JSON（供 ``metadata_builder.resolve_render_metadata`` / ``build_metadata`` 使用）。
 
 用法::
     blender -b /path/to/scene.blend --python blender_dump_metadata.py -- /path/to/camera_fragment.json

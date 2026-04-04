@@ -9,7 +9,7 @@ INFINIGEN 统一生成与渲染入口。
 输出目录命名:
   <INFINIGEN>/SCENES_SKETCH/{canonical_room_type}_s{seed}/  默认（临时试跑、调参、改场景；非正式数据集）
   <INFINIGEN>/SCENES_RAW/…                      原始生成输出（未预处理），仅在使用 --scenes-raw 时
-  <IDL3D>/SCENES_PROCESSED/                     预处理暂存（脚本自建目录，不由 generate.py 写入）
+  <INFINIGEN>/SCENES_PROCESSED/                 预处理工作目录（由 preprocess --final 写入；不由 generate.py 直接写入）
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 --scenes-raw 推荐跑法（SSH 到学校服务器 / Cursor Remote-SSH）

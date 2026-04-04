@@ -3,7 +3,7 @@
 
 枚举 ``unique_assets`` 下、排除结构/门窗等后的顶层资产。
 
-- ``scene_id``：场景目录名（与 ``info.json`` 一致）。
+- ``scene_id``：场景目录名（与 ``objects_in_view.json`` 一致）。
 - ``position``：根物体 ``matrix_world.translation``。
 - ``dimensions``：子树 MESH 在**资产根局部系**下合并 AABB 的 ``[dx,dy,dz]``（``combined_aabb_root_local``）。约定见仓库文档（如 ``IDL3D/docs/geometric_rules_floor.md``）。
 - ``rotation_yaw``：语义前向相对 +Y，``atan2(-fx,fy)`` 度；见 ``semantic_yaw_degrees``。类别 ``blackboard`` 在无 Front 标签时用**根局部 +Y** 回退（非默认 +X）。类别 ``side_table``（``SideTableFactory`` 默认 ``(w,w,h)`` 方形台面）在水平 ``dimensions`` 近似正方形时**固定为 0**。灯具（``lamp`` / ``*_lamp``）与类别名中含 ``_plant_`` 的绿植（如 ``large_plant_container``）**无稳定语义朝向**，写入 JSON **``null``**（评测应跳过 yaw）。
@@ -189,7 +189,7 @@ def resolve_room_metrics_box() -> Optional[Dict[str, Any]]:
     """
     单房 box：优先 ``unique_assets:room_floor`` 合并 AABB 得 W/D/H；
     否则相机射线找地板，再否则取最大 ``*.floor`` 网格。
-    返回 dict 含 ``cam_obj``（渲染相机），供 ``extract_info.write_info_json_v2`` 使用。
+    返回 dict 含 ``cam_obj``（渲染相机）；``extract_info`` 写 info 时不再使用相机字段。
     """
     import bpy
 

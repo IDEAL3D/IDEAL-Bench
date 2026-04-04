@@ -15,8 +15,7 @@
 - ``metadata.json`` — 场景 id、房型、相机与实例索引表（object_index → 语义 id）
 
 流程：先 ``coarse``+``render`` 出 RGB；在清理前再跑一趟 ``@flat/render_image`` 仅用于 Object Index；
-再写 ``metadata.json``（优先当前进程 ``bpy`` 打开 ``scene.blend`` 读相机；否则 ``blender -b`` 子进程；
-再否则用 ``camview*.npz`` 推算）。最后删至上述四文件。
+再写 ``metadata.json``（见 ``metadata_builder``：``blender_dump_metadata.py`` 子进程或当前进程 ``bpy``；失败则报错）。最后删至上述四文件。
 
 运行示例:
     # 默认 1 个场景，中等尺寸
@@ -97,10 +96,8 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import math
 import os
 import random
-import re
 import secrets
 import shutil
 import subprocess
@@ -123,6 +120,10 @@ from configs.constant import (
 from configs.infinigen_paths import INFINIGEN_IDL3D_ROOT, SCENES_SKETCH_ROOT
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+_GEN_LIB_DIR = SCRIPT_DIR
+if str(_GEN_LIB_DIR) not in sys.path:
+    sys.path.insert(0, str(_GEN_LIB_DIR))
+import metadata_builder  # noqa: E402
 
 # 默认场景父目录：试跑 / 调参与改结果（非正式 RAW 数据集目录，位于同级 INFINIGEN 仓库）
 
@@ -159,7 +160,7 @@ _DEFAULT_SIZE_TIERS: dict[str, tuple[float, float, float, float]] = {
     "large":  (6.0, 8.0, 6.0, 8.0),
 }
 
-# 按房间类型的专属尺寸档位。
+# 按房间类型的专属尺寸档位（键为 **canonical**，与 ``configs.constant.ROOM_TYPES`` 一致）。
 # 住宅 living_space（6 类）：厨房/洗手间/饭厅仅固定一档；卧室与客厅各两档由脚本按 seed 50% 抽样；
 # homestudio 为原 large 卧室（≥36 m² 家具档），由用户显式选择房型。
 ROOM_SIZE_TIERS: dict[str, dict[str, tuple[float, float, float, float]]] = {
@@ -171,7 +172,7 @@ ROOM_SIZE_TIERS: dict[str, dict[str, tuple[float, float, float, float]]] = {
     "homestudio": {
         "studio": (5.0, 7.0, 5.0, 7.0),   # 原 large 卧室 / home-studio
     },
-    "living-room": {
+    "livingroom": {
         "small":  (3.0, 5.0, 3.0, 5.0),
         "medium": (4.0, 8.0, 4.0, 8.0),
     },
@@ -181,16 +182,16 @@ ROOM_SIZE_TIERS: dict[str, dict[str, tuple[float, float, float, float]]] = {
     "bathroom": {
         "medium": (2.5, 3.2, 2.5, 3.2),
     },
-    "dining-room": {
+    "diningroom": {
         "medium": (3.5, 5.5, 3.5, 5.5),
     },
-    # --- 大空间 ---
-    "open-office": {
+    # --- 大空间（canonical：office / meetingroom / …）---
+    "office": {
         "small":  (3.0, 4.0, 3.0, 4.0),        # ~9-16 m²   单人办公室
         "medium": (4.0, 6.0, 4.0, 6.0),        # ~16-36 m²  普通多人办公室
         "large":  (6.0, 8.0, 6.0, 8.0),        # ~36-64 m²  普通多人办公室
     },
-    "meeting-room": {
+    "meetingroom": {
         "small":  (3.5, 5.0, 3.0, 4.5),        # ~10-22 m²
         "medium": (5.0, 7.0, 4.0, 5.5),        # ~20-38 m²
         "large":  (7.0, 10.0, 5.5, 7.0),       # ~38-70 m²
@@ -228,16 +229,16 @@ def _is_living_space_room(canonical_room_type: str) -> bool:
     return canonical_room_type in LIVING_SPACE_ROOM_TYPES
 
 
-def resolve_living_space_tier(room_type: str, seed: int) -> str:
-    """住宅类：每个场景一个内部档位（写入 gin size_override，不出现在输出目录名）。"""
+def resolve_living_space_tier(canonical_room_type: str, seed: int) -> str:
+    """住宅类：每个场景一个内部档位（写入 gin size_override，不出现在输出目录名）。``canonical_room_type`` 为 canonical。"""
     rng = random.Random(seed)
-    if room_type in ("kitchen", "bathroom", "dining-room"):
+    if canonical_room_type in ("kitchen", "bathroom", "diningroom"):
         return "medium"
-    if room_type == "homestudio":
+    if canonical_room_type == "homestudio":
         return "studio"
-    if room_type in ("bedroom", "living-room"):
+    if canonical_room_type in ("bedroom", "livingroom"):
         return rng.choice(["small", "medium"])
-    raise ValueError(f"非住宅 living_space 房型: {room_type!r}")
+    raise ValueError(f"非住宅 living_space 房型: {canonical_room_type!r}")
 
 
 def get_size_for_room(
@@ -255,26 +256,26 @@ def get_size_for_room(
     return _DEFAULT_SIZE_TIERS[tier]
 
 
-# 房间类型 → GIN 配置文件 & 约束模块 映射（键为 Infinigen 内部串）
+# 房间类型 → GIN 配置文件 & 约束模块 映射（键为 **canonical**）
 ROOM_CONFIG_MAP = {
     # 住宅 (living_space)
     "bedroom":     "living_space",
     "homestudio":  "living_space",
-    "living-room": "living_space",
+    "livingroom": "living_space",
     "kitchen":     "living_space",
     "bathroom":    "living_space",
-    "dining-room": "living_space",
+    "diningroom": "living_space",
     # 办公/教学 (working_space)
-    "open-office":  "working_space",
-    "meeting-room": "working_space",
+    "office":  "working_space",
+    "meetingroom": "working_space",
     "classroom":    "working_space",
     "library":      "working_space",
 }
 
 
-def _gin_module_for_room(room_type: str) -> str:
-    """Return the constraint module path for the given room type."""
-    config_name = ROOM_CONFIG_MAP[room_type]
+def _gin_module_for_room(canonical_room_type: str) -> str:
+    """Return the constraint module path for the given canonical room type."""
+    config_name = ROOM_CONFIG_MAP[canonical_room_type]
     return f"infinigen_examples.constraints.{config_name}"
 
 SIZE_OVERRIDE_GIN_TEMPLATE = "{module}.floor_plan.size_override"
@@ -330,212 +331,6 @@ def _run(cmd: list[str], gpu: str | None = None) -> None:
 FINAL_KEEP_NAMES = frozenset(
     {"scene.blend", "color.png", "instance_segmentation.png", "metadata.json"}
 )
-
-# 与 ``camera_rotation_euler`` 三分量一致：Blender mathutils 常用 XYZ 顺序（弧度）
-RENDER_ROTATION_UNIT = "radians"
-RENDER_ROTATION_ORDER = "XYZ"
-
-
-def _attach_render_rotation_fields(render: dict) -> dict:
-    """为 ``render`` 块补充 ``rotation_unit`` / ``rotation_order``（与 ``camera_rotation_euler`` 对应）。"""
-    out = dict(render)
-    out["rotation_unit"] = RENDER_ROTATION_UNIT
-    out["rotation_order"] = RENDER_ROTATION_ORDER
-    return out
-
-
-def build_instance_map_block(object_index_map: dict[str, str]) -> dict:
-    """Per-scene ``instance_map`` payload only; field semantics: ``docs/METADATA_SCHEMA.md``."""
-    return {
-        "format": "grayscale_uint16",
-        "bits_per_channel": 16,
-        "background_value": 0,
-        "object_index_map": object_index_map,
-    }
-
-
-def _find_blender_executable() -> str:
-    """用于 ``blender -b scene.blend --python ...``（无 bpy 的宿主 Python 无法读相机）。"""
-    override = os.environ.get("BLENDER")
-    if override and Path(override).is_file():
-        return override
-    import shutil
-
-    w = shutil.which("blender")
-    if w:
-        return w
-    ex = sys.executable or ""
-    if "blender" in ex.lower():
-        return ex
-    raise RuntimeError(
-        "未找到 blender 可执行文件：请将 blender 加入 PATH，或设置环境变量 BLENDER=/path/to/blender"
-    )
-
-
-def _run_blender_dump_render_metadata(blend_path: Path, out_json: Path) -> None:
-    dump_script = SCRIPT_DIR / "blender_dump_metadata.py"
-    if not dump_script.is_file():
-        raise FileNotFoundError(f"缺少 {dump_script}")
-    blender = _find_blender_executable()
-    cmd = [
-        blender,
-        "-b",
-        str(blend_path),
-        "--python",
-        str(dump_script),
-        "--",
-        str(out_json),
-    ]
-    logger.info("[CMD] %s", " ".join(cmd))
-    subprocess.run(cmd, check=True, cwd=str(INFINIGEN_IDL3D_ROOT))
-
-
-def _mat_to_euler_xyz(R: np.ndarray) -> tuple[float, float, float]:
-    """世界→相机旋转矩阵的 XYZ 欧拉角（与 npz 回退配套，非 Blender 原生 euler）。"""
-    R = np.asarray(R, dtype=np.float64)
-    sy = math.sqrt(R[0, 0] * R[0, 0] + R[1, 0] * R[1, 0])
-    singular = sy < 1e-6
-    if not singular:
-        x = math.atan2(R[2, 1], R[2, 2])
-        y = math.atan2(-R[2, 0], sy)
-        z = math.atan2(R[1, 0], R[0, 0])
-    else:
-        x = math.atan2(-R[1, 2], R[1, 1])
-        y = math.atan2(-R[2, 0], sy)
-        z = 0.0
-    return (x, y, z)
-
-
-def _render_metadata_from_camview_npz(output_folder: Path) -> dict | None:
-    """从 Infinigen 首趟渲染生成的 ``camview*.npz``（K, T, HW）推算 ``render`` 块。"""
-    npzs = sorted(output_folder.glob("camview*.npz"))
-    if not npzs:
-        return None
-    z = np.load(npzs[0])
-    K = np.asarray(z["K"], dtype=np.float64)
-    T = np.asarray(z["T"], dtype=np.float64)
-    HW = np.asarray(z["HW"]).reshape(-1)
-    if HW.size < 2:
-        return None
-    H, W = int(HW[0]), int(HW[1])
-    fx = float(K[0, 0])
-    sensor_mm = 36.0
-    focal_mm = fx * sensor_mm / float(W)
-    R = T[:3, :3]
-    t = T[:3, 3]
-    cam_center = (-R.T @ t.reshape(3, 1)).reshape(3)
-    ex, ey, ez = _mat_to_euler_xyz(R)
-    return {
-        "resolution": [W, H],
-        "camera_location": [float(cam_center[0]), float(cam_center[1]), float(cam_center[2])],
-        "camera_rotation_euler": [ex, ey, ez],
-        "focal_length_mm": focal_mm,
-        "sensor_width": sensor_mm,
-    }
-
-
-def _render_metadata_minimal_from_args(args) -> dict:
-    rw = getattr(args, "render_width", 1280)
-    if rw == 640:
-        w, h = 640, 360
-    else:
-        w, h = 1280, 720
-    return {
-        "resolution": [w, h],
-        "camera_location": [0.0, 0.0, 0.0],
-        "camera_rotation_euler": [0.0, 0.0, 0.0],
-        "focal_length_mm": 0.0,
-        "sensor_width": 0.0,
-    }
-
-
-def _render_metadata_from_bpy_open(blend_path: Path) -> dict | None:
-    """当前解释器已链接 bpy 时（如 ``blender --python core.py``），直接打开 blend 读相机。"""
-    try:
-        import bpy  # type: ignore[import-not-found]
-    except ImportError:
-        return None
-    try:
-        bpy.ops.wm.open_mainfile(filepath=str(blend_path))
-        cam = bpy.context.scene.camera
-        if cam is None:
-            return None
-        loc, rot_quat, _sca = cam.matrix_world.decompose()
-        euler = rot_quat.to_euler(RENDER_ROTATION_ORDER)
-        return {
-            "resolution": [
-                int(bpy.context.scene.render.resolution_x),
-                int(bpy.context.scene.render.resolution_y),
-            ],
-            "camera_location": [float(loc.x), float(loc.y), float(loc.z)],
-            "camera_rotation_euler": [float(euler.x), float(euler.y), float(euler.z)],
-            "focal_length_mm": float(cam.data.lens),
-            "sensor_width": float(cam.data.sensor_width),
-        }
-    except Exception as e:
-        logger.warning("bpy 打开 scene.blend 读取相机失败: %s", e)
-        return None
-
-
-def resolve_render_metadata(blend_path: Path, output_folder: Path, args) -> dict:
-    """写入 metadata 所需的 ``render`` 对象；多路回退，保证总能得到字典。"""
-    meta = _render_metadata_from_bpy_open(blend_path)
-    if meta is not None:
-        logger.info("metadata.render：自当前进程 bpy 读取 scene.blend")
-        return _attach_render_rotation_fields(meta)
-
-    try:
-        cam_fragment = output_folder / ".camera_fragment.json"
-        _run_blender_dump_render_metadata(blend_path, cam_fragment)
-        meta = json.loads(cam_fragment.read_text(encoding="utf-8"))
-        cam_fragment.unlink(missing_ok=True)
-        logger.info("metadata.render：独立 blender 子进程写出")
-        return _attach_render_rotation_fields(meta)
-    except Exception as e:
-        logger.warning("独立 blender 导出相机失败（可忽略若后续 npz 成功）: %s", e)
-        cam_fragment = output_folder / ".camera_fragment.json"
-        cam_fragment.unlink(missing_ok=True)
-
-    meta = _render_metadata_from_camview_npz(output_folder)
-    if meta is not None:
-        logger.info("metadata.render：自 camview*.npz 推算（sensor_width 按 36mm 全画幅由 K 反推 focal）")
-        return _attach_render_rotation_fields(meta)
-
-    logger.warning(
-        "metadata.render：无 bpy 且无 camview*.npz，使用占位分辨率；请检查环境或重新渲染"
-    )
-    return _attach_render_rotation_fields(_render_metadata_minimal_from_args(args))
-
-
-def _object_index_map_from_objects_json(data: dict) -> dict[str, str]:
-    """由 Infinigen GT 输出的 ``Objects*.json`` 构造 ``object_index_map``。
-
-    - JSON **顶层键**为 Blender 物体名（``bpy.data.objects`` 的 ``name``）。
-    - 每个物体含 **object_index**：即 Cycles 渲染用的 **Pass Index**（正整数）。
-    - 输出映射：**键** = 该 Pass Index 的十进制字符串；**值** = 便于人读的标签（非 Blender 内置 ID）。
-
-    标签规则：将物体名清洗为 ``base``（小写、非字母数字→下划线）；同一 ``base`` 多次出现时
-    按 **物体名字符串排序后的遍历顺序** 编号为 ``base_001``、``base_002``…。
-    与 ``instance_segmentation.png`` 的关系：像素值 = Pass Index（uint16 PNG；0 通常为背景）。
-    """
-    out: dict[str, str] = {}
-    counts: dict[str, int] = {}
-    for name in sorted(data.keys()):
-        info = data[name]
-        if not isinstance(info, dict):
-            continue
-        oi = info.get("object_index")
-        if oi is None:
-            continue
-        idx = int(oi)
-        if idx <= 0:
-            continue
-        base = re.sub(r"[^a-zA-Z0-9]+", "_", str(name)).strip("_").lower() or "object"
-        counts[base] = counts.get(base, 0) + 1
-        n = counts[base]
-        label = f"{base}_{n:03d}"
-        out[str(idx)] = label
-    return out
 
 
 def _build_gt_object_index_command(
@@ -595,10 +390,16 @@ def _ensure_color_png(folder: Path) -> Path:
 
     - **新数据**：目录内有 ``Image_*.png``（首趟 Cycles 输出）则改名为 ``color.png``。
     - **旧数据**：已有 ``color.png``（例如仅保留 blend+彩图时）则不再要求 ``Image_*.png``。
+    - **部分导出**：仅有小写 ``image.png`` 时重命名为 ``color.png``。
     """
     folder = Path(folder)
     dst = folder / "color.png"
     if dst.is_file():
+        return dst
+    alt = folder / "image.png"
+    if alt.is_file():
+        alt.rename(dst)
+        logger.info("已将 image.png 重命名为 color.png: %s", folder)
         return dst
     return _rename_rgb_to_color_png(folder)
 
@@ -629,16 +430,16 @@ def _write_instance_segmentation_png(npy_path: Path, out_png: Path) -> None:
         )
     u16 = np.ascontiguousarray(np.clip(arr, 0, 65535).astype(np.uint16))
     try:
-        from PIL import Image
-
-        Image.fromarray(u16, mode="I;16").save(out_png)
+        imwrite(out_png, u16)
     except Exception as e:
-        logger.debug("PIL I;16 写 PNG 失败，尝试 imageio: %s", e)
+        logger.debug("imageio 写 uint16 PNG 失败，尝试 PIL mode I: %s", e)
         try:
-            imwrite(out_png, u16)
+            from PIL import Image
+
+            Image.fromarray(u16.astype(np.int32), mode="I").save(out_png)
         except Exception as e2:
             raise RuntimeError(
-                "无法写入 16-bit instance_segmentation.png（请安装 Pillow 或可用的 imageio PNG）"
+                "无法写入 16-bit instance_segmentation.png（请安装 imageio PNG 或 Pillow）"
             ) from e2
 
 
@@ -688,18 +489,14 @@ def _finalize_scene_outputs(
 
     _write_instance_segmentation_png(seg_npy[0], output_folder / "instance_segmentation.png")
 
-    objects_tree = json.loads(objs_json[0].read_text(encoding="utf-8"))
-    index_map = _object_index_map_from_objects_json(objects_tree)
-
-    render_meta = resolve_render_metadata(blend_path, output_folder, args)
-
     scene_id = f"{canonical_room_type}_s{seed}"
-    metadata = {
-        "scene_id": scene_id,
-        "room_type": canonical_room_type,
-        "render": render_meta,
-        "instance_map": build_instance_map_block(index_map),
-    }
+    metadata = metadata_builder.build_metadata(
+        scene_id,
+        canonical_room_type,
+        blend_path,
+        objs_json[0],
+        args,
+    )
     (output_folder / "metadata.json").write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -734,11 +531,12 @@ def _delete_all_except_final_four(output_folder: Path) -> None:
 def _build_single_command(
     seed: int,
     size_name: str,
-    room_type: str,
+    canonical_room_type: str,
     output_folder: Path,
     args,
 ) -> list[str]:
-    """构建调用 infinigen_examples.single 的命令。"""
+    """构建调用 infinigen_examples.single 的命令。尺寸表按 canonical 查；gin 内 room_type 用 Infinigen 串。"""
+    infinigen_rt = infinigen_room_type(canonical_room_type)
     base = [sys.executable, "-m", "infinigen_examples.single"]
     cli_seed = f"s{seed}"
 
@@ -753,9 +551,9 @@ def _build_single_command(
         *args.configs,
     ]
 
-    size_override = get_size_for_room(room_type, size_name)
+    size_override = get_size_for_room(canonical_room_type, size_name)
     size_gin = _size_override_gin_value(size_override)
-    module = _gin_module_for_room(room_type)
+    module = _gin_module_for_room(canonical_room_type)
     size_gin_key = SIZE_OVERRIDE_GIN_TEMPLATE.format(module=module)
     furn_size_gin_key = FURNITURE_SIZE_OVERRIDE_GIN_TEMPLATE.format(module=module)
     default_overrides = [
@@ -767,8 +565,8 @@ def _build_single_command(
         f"configure_render_cycles.denoise={str(args.denoise)}",
         f"{size_gin_key}={size_gin}",
         f"{furn_size_gin_key}={size_gin}",
-        f"{module}.floor_plan.room_type='{room_type}'",
-        f"compose_single_room.room_type='{room_type}'",
+        f"{module}.floor_plan.room_type='{infinigen_rt}'",
+        f"compose_single_room.room_type='{infinigen_rt}'",
     ]
     if FIXED_WALL_THICKNESS_M is not None:
         default_overrides.append(
@@ -914,11 +712,10 @@ def main() -> None:
         args.gpu = get_render_gpu()
 
     canonical = args.room_type
-    infinigen_rt = infinigen_room_type(canonical)
 
-    # 根据 room-type 自动选择 GIN 配置（Infinigen 内部串）
+    # 根据 room-type 自动选择 GIN 配置（canonical → living_space / working_space）
     if args.configs is None:
-        args.configs = [ROOM_CONFIG_MAP[infinigen_rt]]
+        args.configs = [ROOM_CONFIG_MAP[canonical]]
 
     scenes_root = (
         args.scenes_root if args.scenes_root is not None else SCENES_SKETCH_ROOT
@@ -931,7 +728,7 @@ def main() -> None:
 
     living = _is_living_space_room(canonical)
 
-    # 确定每个场景的档位列表（尺寸查询用 Infinigen 串）
+    # 确定每个场景的档位列表（尺寸查询用 canonical）
     if living:
         if args.room_size_mix is not None:
             parser.error(
@@ -944,7 +741,7 @@ def main() -> None:
             )
         num_scenes = args.num_scenes
         size_list = [
-            resolve_living_space_tier(infinigen_rt, args.start_seed + i)
+            resolve_living_space_tier(canonical, args.start_seed + i)
             for i in range(num_scenes)
         ]
     elif args.room_size_mix is not None:
@@ -963,11 +760,11 @@ def main() -> None:
         else:
             size_list = [args.room_size] * num_scenes
 
-    avail = get_available_tiers(infinigen_rt)
+    avail = get_available_tiers(canonical)
     for tier in set(size_list):
         if tier not in avail:
             parser.error(
-                f"房间类型 '{canonical}'（Infinigen: {infinigen_rt}）不支持档位 '{tier}'。"
+                f"房间类型 '{canonical}' 不支持档位 '{tier}'。"
                 f"可用: {avail}"
             )
 
@@ -981,7 +778,7 @@ def main() -> None:
         output_folder.mkdir(parents=True, exist_ok=True)
 
         print(f"\n=== Scene {i+1}/{num_scenes}: seed={seed}, room={canonical}, size={size_name} ===")
-        cmd = _build_single_command(seed, size_name, infinigen_rt, output_folder, args)
+        cmd = _build_single_command(seed, size_name, canonical, output_folder, args)
         _run(cmd, gpu=args.gpu)
 
         if "render" in args.task:

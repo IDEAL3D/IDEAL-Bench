@@ -103,7 +103,7 @@ def parse_args() -> argparse.Namespace:
         "--scenes-root",
         type=Path,
         default=root / "data" / "scenes2test",
-        help="场景根目录：需含 <scene_id>/info.json、GT.json、scene.blend（compose / render）",
+        help="场景根目录：需含 <scene_id>/objects_in_view.json（或 info.json）、GT.json、scene.blend",
     )
     p.add_argument(
         "--blend-root",
@@ -204,9 +204,13 @@ def build_compose_cmd(
 ) -> list[str]:
     """compose.py 子进程参数列表。"""
     blend = _rt.scene_blend_path(args.scenes_root, args.blend_root, scene_id)
-    info_json = args.scenes_root / scene_id / "info.json"
+    sidecar = args.scenes_root / scene_id / "objects_in_view.json"
+    legacy = args.scenes_root / scene_id / "info.json"
+    info_json = sidecar if sidecar.is_file() else legacy
     if not info_json.is_file():
-        raise FileNotFoundError(f"compose 需要含 objects 的 info.json: {info_json}")
+        raise FileNotFoundError(
+            f"compose 需要含 objects 的 objects_in_view.json 或 info.json: {sidecar}"
+        )
     gt_json = args.scenes_root / scene_id / "GT.json"
     if not gt_json.is_file():
         raise FileNotFoundError(f"compose 需要 GT.json: {gt_json}")

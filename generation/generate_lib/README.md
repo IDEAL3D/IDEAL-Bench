@@ -1,6 +1,6 @@
 # `generation/generate_lib/` — 合成 / 渲染后端
 
-本目录**仅**服务 [`../generate.py`](../generate.py) 一条线（如 `core.py` 等）。一次性修补旧 RAW 的脚本在上一级 [`../fix_existing_scene.py`](../fix_existing_scene.py)，非管线核心。  
+本目录**仅**服务 [`../generate.py`](../generate.py) 一条线（如 `core.py` 等）。一次性修补旧 RAW 的脚本在仓库根 [`../../tools/fix_existing_scene.py`](../../tools/fix_existing_scene.py)，非管线核心。  
 **预处理**是并列的另一条线：入口 [`../preprocess.py`](../preprocess.py），库 [`../preprocess_lib/`](../preprocess_lib/)，**不在本目录内**。  
 路径常量见 [`../../configs/infinigen_paths.py`](../../configs/infinigen_paths.py)；Infinigen 克隆在 **`../../infinigen-idl3d/`**。
 
@@ -101,7 +101,7 @@ generate_all.py
 
 入口：**[`../preprocess.py`](../preprocess.py)**，库：**[`../preprocess_lib/`](../preprocess_lib/)**。设计与字段见 [`../../docs/PREPROCESS_DESIGN.md`](../../docs/PREPROCESS_DESIGN.md)。
 
-同级的 **`../promote.py`**、**`../backfill_preprocess_batches_metrics.py`** 也属于预处理/数据集流转，与 `generate_lib/` 无包含关系。
+同级的 **[`../../tools/promote.py`](../../tools/promote.py)**、**`../backfill_preprocess_batches_metrics.py`** 也属于预处理/数据集流转，与 `generate_lib/` 无包含关系。
 
 ---
 

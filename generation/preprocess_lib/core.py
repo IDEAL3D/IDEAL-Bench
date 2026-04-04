@@ -21,9 +21,22 @@ from typing import Any, Dict, List, Optional, Tuple
 from .defaults import (
     BPY_PYTHON,
     DEFAULT_LOG_FILENAME,
+    FURNITURE_OVERLAP_JSON,
+    FURNITURE_OVERLAP_PAIR_COUNT_KEY,
+    FURNITURE_OVERLAP_VOLUME_TOTAL_KEY,
     GT_JSON_NAME,
+    OBJECTS_IN_VIEW_JSON,
     PREPROCESS_LOG_SEP,
+    PROCESSED_REJECT_SUBDIR,
 )
+
+_REPO_ROOT_FOR_CONFIG = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _REPO_ROOT_FOR_CONFIG not in sys.path:
+    sys.path.insert(0, _REPO_ROOT_FOR_CONFIG)
+from configs.constant import ROOM_TYPES
+
+ROOM_TYPES_SET: frozenset[str] = frozenset(ROOM_TYPES)
+FINAL_SCOPE_ROOT = "root"
 
 
 def _generation_dir() -> str:
@@ -58,12 +71,21 @@ def _infinigen_repo_root() -> str:
     return os.path.normpath(os.path.join(_repo_root(), "..", "INFINIGEN"))
 
 
+def _scenes_sketch_root() -> str:
+    return os.path.join(_infinigen_repo_root(), "SCENES_SKETCH")
+
+
+def _scenes2test_root() -> str:
+    return os.path.join(_infinigen_repo_root(), "SCENES2TEST")
+
+
 def _raw_manifests_dir() -> str:
     return os.path.join(_infinigen_repo_root(), "SCENES_RAW", "manifests")
 
 
 def _processed_root() -> str:
-    return os.path.join(_repo_root(), "SCENES_PROCESSED")
+    """预处理工作根：``INFINIGEN/SCENES_PROCESSED``（与 RAW 同仓库）。"""
+    return os.path.join(_infinigen_repo_root(), "SCENES_PROCESSED")
 
 
 def _processed_manifests_dir() -> str:
@@ -103,29 +125,90 @@ _RAW_ROOT_SKIP_DIR_NAMES = frozenset(
     {"manifests", "DEPRECATED", "0_DEPRECATED", "README.txt", ".DS_Store"}
 )
 
+# SCENES_PROCESSED 根下列目录不应当作 ``<scene_id>/scene.blend`` 参与批扫描
+_PROCESSED_TOPLEVEL_SKIP_DIRS = frozenset(
+    {
+        "manifests",
+        PROCESSED_REJECT_SUBDIR,
+        "DEPRECATED",
+        "0_DEPRECATED",
+    }
+)
 
-def _discover_scene_ids_under_raw(room_type: str) -> List[str]:
-    """扫描 ``SCENES_RAW`` 根目录下平铺的 ``<房型前缀>_s*`` 场景目录（待预处理）。
 
-    不包含 ``SCENES_RAW/<房型>/`` 下已入库的场景目录。
+def _raw_room_subdirs_to_skip_for_flat_scan() -> frozenset[str]:
+    """RAW 根下列为各房型子目录（``SCENES_RAW/bedroom`` 等），非 ``scene_id`` 平铺项。"""
+    return frozenset(_room_folder_name(rt) for rt in ROOM_TYPES)
+
+
+def _final_scope_normalized(room_type_arg: str) -> str:
+    s = room_type_arg.strip().lower()
+    if s == FINAL_SCOPE_ROOT:
+        return FINAL_SCOPE_ROOT
+    canonical = room_type_arg.strip()
+    if canonical in ROOM_TYPES_SET:
+        return canonical
+    raise ValueError(
+        f"无效 --room-type {room_type_arg!r}：用 {FINAL_SCOPE_ROOT!r} 表示 RAW 根目录平铺场景，"
+        f"或为 {list(ROOM_TYPES)} 之一以处理 SCENES_RAW/<房型>/ 下子目录。"
+    )
+
+
+def _discover_scene_ids_under_raw(scope: str) -> List[str]:
+    """``scope==root``：RAW 根下平铺、且前缀属于 ``ROOM_TYPES`` 的 ``*_s*`` 目录。
+
+    否则：``SCENES_RAW/<房型>/`` 下一层子目录中，合法 ``scene_id`` 且房型前缀与 ``scope`` 一致者。
     """
     raw_root = os.path.join(_infinigen_repo_root(), "SCENES_RAW")
-    folder = _room_folder_name(room_type)
+    skip_nested = _raw_room_subdirs_to_skip_for_flat_scan()
     found: set[str] = set()
-    if os.path.isdir(raw_root):
+
+    if scope == FINAL_SCOPE_ROOT:
+        if not os.path.isdir(raw_root):
+            return []
         for name in sorted(os.listdir(raw_root)):
             if name in _RAW_ROOT_SKIP_DIR_NAMES or name.startswith("."):
                 continue
-            if name == folder:
+            if name in skip_nested:
                 continue
             p = os.path.join(raw_root, name)
             if not os.path.isdir(p):
                 continue
-            if not name.startswith(folder + "_"):
+            parsed = _parse_scene_dir_name(name)
+            if parsed is None:
                 continue
-            if _parse_scene_dir_name(name) is not None:
+            prefix, _seed = parsed
+            if prefix in ROOM_TYPES_SET:
                 found.add(name)
+        return sorted(found)
+
+    sub = os.path.join(raw_root, _room_folder_name(scope))
+    if not os.path.isdir(sub):
+        return []
+    for name in sorted(os.listdir(sub)):
+        if name.startswith("."):
+            continue
+        p = os.path.join(sub, name)
+        if not os.path.isdir(p):
+            continue
+        parsed = _parse_scene_dir_name(name)
+        if parsed is None:
+            continue
+        prefix, _seed = parsed
+        if prefix == scope:
+            found.add(name)
     return sorted(found)
+
+
+def _raw_scene_dir_for_final(scope: str, scene_id: str) -> Optional[str]:
+    """``--final`` 拷贝/校验：``root`` 为 ``SCENES_RAW/<scene_id>``，否则 ``SCENES_RAW/<房型>/<scene_id>``。"""
+    raw_root = os.path.join(_infinigen_repo_root(), "SCENES_RAW")
+    if scope == FINAL_SCOPE_ROOT:
+        return _raw_scene_flat_dir(raw_root, scene_id)
+    sub = os.path.join(raw_root, _room_folder_name(scope), scene_id)
+    if os.path.isdir(sub):
+        return sub
+    return None
 
 
 def _load_scene_id_to_batch_csv(room_type: str) -> Dict[str, str]:
@@ -199,19 +282,23 @@ def _read_gt_asset_count(scene_dir: str) -> Optional[int]:
 
 
 def _read_info_asset_count_in_view(scene_dir: str) -> Optional[int]:
-    """``info.json`` → ``asset_count_in_view``；失败时 ``None``。"""
-    path = os.path.join(scene_dir, "info.json")
-    if not os.path.isfile(path):
-        return None
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-        v = data.get("asset_count_in_view")
+    """``objects_in_view.json``（或旧 ``info.json``）→ ``objects_in_view_count`` / ``asset_count_in_view``。"""
+    for fname in (OBJECTS_IN_VIEW_JSON, "info.json"):
+        path = os.path.join(scene_dir, fname)
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        v = data.get("objects_in_view_count")
         if v is None:
-            return None
+            v = data.get("asset_count_in_view")
+        if v is None:
+            continue
         return int(v)
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
-        return None
+    return None
 
 
 def _batch_avg_asset_metrics(blend_paths: List[str]) -> Tuple[Optional[float], Optional[float]]:
@@ -354,12 +441,11 @@ def _append_preprocess_scene_csv_row(
         )
 
 
-def _assert_raw_scenes_ready_for_final(room_type: str, scene_ids: List[str]) -> None:
-    """``--final`` 写 manifest / 拷贝前检查：根目录平铺、含 ``scene.blend`` 与至少一个 ``.png``（文件名不限）。"""
-    raw_root = os.path.join(_infinigen_repo_root(), "SCENES_RAW")
+def _assert_raw_scenes_ready_for_final(scope: str, scene_ids: List[str]) -> None:
+    """``--final`` 写 manifest / 拷贝前检查：含 ``scene.blend`` 与至少一个 ``.png``（文件名不限）。"""
     bad: List[str] = []
     for sid in scene_ids:
-        src = _raw_scene_flat_dir(raw_root, sid)
+        src = _raw_scene_dir_for_final(scope, sid)
         if not src:
             bad.append(f"{sid} (无场景目录)")
             continue
@@ -370,20 +456,25 @@ def _assert_raw_scenes_ready_for_final(room_type: str, scene_ids: List[str]) -> 
             bad.append(f"{sid} (缺任意 .png 渲染图 @ {src})")
     if not bad:
         return
+    loc = (
+        "SCENES_RAW/<scene_id>/（平铺）"
+        if scope == FINAL_SCOPE_ROOT
+        else f"SCENES_RAW/{_room_folder_name(scope)}/<scene_id>/"
+    )
     raise ValueError(
-        "SCENES_RAW 中下列场景未就绪（需在 SCENES_RAW/<scene_id>/ 根目录平铺，"
-        "且同时包含 scene.blend 与至少一个 .png；"
-        f"已收入 SCENES_RAW/{_room_folder_name(room_type)}/ 的不参与 --final）：\n  "
+        f"SCENES_RAW 中下列场景未就绪（期望 {loc}，"
+        "且同时包含 scene.blend 与至少一个 .png）：\n  "
         + "\n  ".join(bad)
     )
 
 
-def _copy_raw_scenes_to_processed(scene_ids: List[str], *, overwrite: bool) -> None:
-    raw_root = os.path.join(_infinigen_repo_root(), "SCENES_RAW")
+def _copy_raw_scenes_to_processed(
+    scene_ids: List[str], *, scope: str, overwrite: bool
+) -> None:
     proc_root = _processed_root()
     os.makedirs(proc_root, exist_ok=True)
     for sid in scene_ids:
-        src = _raw_scene_flat_dir(raw_root, sid)
+        src = _raw_scene_dir_for_final(scope, sid)
         if not src:
             raise FileNotFoundError(f"missing RAW scene directory for {sid}")
         dst = os.path.join(proc_root, sid)
@@ -394,27 +485,78 @@ def _copy_raw_scenes_to_processed(scene_ids: List[str], *, overwrite: bool) -> N
                 )
             shutil.rmtree(dst)
         shutil.copytree(src, dst)
-        print(f"[final] copied {sid} -> SCENES_PROCESSED/")
+        print(f"[final] copied {sid} -> INFINIGEN/SCENES_PROCESSED/")
 
 
 def _default_log_path() -> str:
-    """Default next to batch scenes so the log is easy to find (not under generation/)."""
-    generation_dir = _generation_dir()
-    repo_root = os.path.dirname(generation_dir)
-    return os.path.join(repo_root, "SCENES2TEST", DEFAULT_LOG_FILENAME)
+    """与默认批处理目录一致：``INFINIGEN/SCENES2TEST`` 下。"""
+    return os.path.join(_scenes2test_root(), DEFAULT_LOG_FILENAME)
+
+
+def _sync_sketch_to_scenes2test(*, overwrite: bool) -> None:
+    """将 ``SCENES_SKETCH/<scene_id>``（含 ``scene.blend`` 的子目录）复制到 ``SCENES2TEST/<scene_id>``。"""
+    sketch = _scenes_sketch_root()
+    dest_root = _scenes2test_root()
+    if not os.path.isdir(sketch):
+        print(f"[sync] skip: SCENES_SKETCH not a directory: {sketch}")
+        return
+    os.makedirs(dest_root, exist_ok=True)
+    n_copy = 0
+    for name in sorted(os.listdir(sketch)):
+        if name.startswith("."):
+            continue
+        src = os.path.join(sketch, name)
+        if not os.path.isdir(src):
+            continue
+        if not os.path.isfile(os.path.join(src, "scene.blend")):
+            continue
+        dst = os.path.join(dest_root, name)
+        if os.path.exists(dst):
+            if not overwrite:
+                continue
+            shutil.rmtree(dst)
+        shutil.copytree(src, dst)
+        print(f"[sync] SCENES_SKETCH/{name} -> SCENES2TEST/{name}")
+        n_copy += 1
+    print(
+        f"[sync] sketch→test: {n_copy} copied"
+        + (" (overwrite on)" if overwrite else ", skipped existing dirs")
+    )
 
 
 def _overlap_pair_count_from_info_dir(
     scene_dir: str, semantics_enabled: bool
 ) -> Optional[int]:
-    """从已写出的 ``info.json`` 读取 ``pair_count``；未写或未计算重叠时 ``None``。"""
+    """从 ``objects_in_view.json`` 顶层字段、或遗留 ``furniture_overlap.json`` / ``info.json`` 读取 pair_count。"""
     if not semantics_enabled:
         return None
-    p = os.path.join(scene_dir, "info.json")
-    if not os.path.isfile(p):
+    p_ovie = os.path.join(scene_dir, OBJECTS_IN_VIEW_JSON)
+    if os.path.isfile(p_ovie):
+        try:
+            with open(p_ovie, encoding="utf-8") as f:
+                ov = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            ov = None
+        if isinstance(ov, dict):
+            n = ov.get(FURNITURE_OVERLAP_PAIR_COUNT_KEY)
+            if isinstance(n, int) and n >= 0:
+                return n
+
+    p_side = os.path.join(scene_dir, FURNITURE_OVERLAP_JSON)
+    if os.path.isfile(p_side):
+        try:
+            with open(p_side, encoding="utf-8") as f:
+                fo = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            fo = {}
+        if isinstance(fo, dict) and fo.get("computed") is True:
+            return int(fo.get("pair_count", 0))
+
+    p_legacy = os.path.join(scene_dir, "info.json")
+    if not os.path.isfile(p_legacy):
         return None
     try:
-        with open(p, encoding="utf-8") as f:
+        with open(p_legacy, encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, json.JSONDecodeError):
         return None
@@ -424,108 +566,112 @@ def _overlap_pair_count_from_info_dir(
     return int(fo.get("pair_count", 0))
 
 
-def _read_furniture_overlap_block(scene_dir: str) -> Optional[dict]:
-    """读取 ``info.json`` 中 ``furniture_overlap`` 对象（``computed`` 为真时）；否则 ``None``。"""
-    p = os.path.join(scene_dir, "info.json")
-    if not os.path.isfile(p):
+def _overlap_volume_m3_total_from_scene_dir(scene_dir: str) -> Optional[Any]:
+    """从 ``objects_in_view.json`` 读取重叠总体积（若存在）。"""
+    p_ovie = os.path.join(scene_dir, OBJECTS_IN_VIEW_JSON)
+    if not os.path.isfile(p_ovie):
         return None
     try:
-        with open(p, encoding="utf-8") as f:
-            data = json.load(f)
+        with open(p_ovie, encoding="utf-8") as f:
+            ov = json.load(f)
     except (OSError, json.JSONDecodeError):
         return None
-    fo = data.get("furniture_overlap")
-    if not isinstance(fo, dict) or fo.get("computed") is not True:
+    if not isinstance(ov, dict):
         return None
-    return fo
+    return ov.get(FURNITURE_OVERLAP_VOLUME_TOTAL_KEY)
 
 
 def _write_overlap_scene_logs(
     *,
     entries: List[Dict[str, Any]],
     out_dir: str,
-    file_stem: str,
 ) -> None:
-    """写入 ``overlap_scenes_<stem>.csv``（仅一个文件），便于筛选需剔除的重叠场景。
+    """写入 ``overlap_scenes.csv``（固定名）；每有一个重叠场景追加 **一行**。
 
-    ``entries`` 每项含 ``preprocess_batch_id``, ``scene_id``, ``overlap_count``, ``furniture_overlap``（dict）。
+    ``entries`` 每项含 ``preprocess_batch_id``, ``scene_id``, ``overlap_count``,
+    ``overlap_volume_m3_total``（可选）。
     """
     if not entries:
         return
-    safe = file_stem.replace(os.sep, "_").replace("/", "_")
     os.makedirs(out_dir, exist_ok=True)
-    csv_path = os.path.join(out_dir, f"overlap_scenes_{safe}.csv")
+    csv_path = os.path.join(out_dir, "overlap_scenes.csv")
 
-    csv_rows: List[List[str]] = [
-        [
-            "preprocess_batch_id",
-            "scene_id",
-            "overlap_pair_count",
-            "overlap_volume_m3_total",
-            "pair_index",
-            "category_a",
-            "category_b",
-            "overlap_volume_m3_pair",
-            "a",
-            "b",
-            "detection",
-        ]
+    header = [
+        "preprocess_batch_id",
+        "scene_id",
+        "overlap_pair_count",
+        "overlap_volume_m3_total",
     ]
+
+    data_rows: List[List[str]] = []
 
     for ent in entries:
         bid = str(ent.get("preprocess_batch_id") or "")
         sid = str(ent.get("scene_id") or "")
         oc = int(ent.get("overlap_count") or 0)
-        fo = ent.get("furniture_overlap") or {}
-        if not isinstance(fo, dict):
-            fo = {}
-        vol_total = fo.get("overlap_volume_m3_total")
+        vol_total = ent.get("overlap_volume_m3_total")
         vol_s = "" if vol_total is None else str(vol_total)
-        pairs = fo.get("pairs")
-        if not isinstance(pairs, list):
-            pairs = []
+        data_rows.append([bid, sid, str(oc), vol_s])
 
-        if not pairs:
-            csv_rows.append(
-                [
-                    bid,
-                    sid,
-                    str(oc),
-                    vol_s,
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                ]
-            )
-            continue
-        for pi, pr in enumerate(pairs):
-            if not isinstance(pr, dict):
-                continue
-            csv_rows.append(
-                [
-                    bid,
-                    sid,
-                    str(oc),
-                    vol_s,
-                    str(pi + 1),
-                    str(pr.get("category_a", "")),
-                    str(pr.get("category_b", "")),
-                    str(pr.get("overlap_volume_m3", "")),
-                    str(pr.get("a", "")),
-                    str(pr.get("b", "")),
-                    str(pr.get("detection", "")),
-                ]
-            )
-
-    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+    need_header = (not os.path.isfile(csv_path)) or os.path.getsize(csv_path) == 0
+    mode = "a" if not need_header else "w"
+    with open(csv_path, mode, newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerows(csv_rows)
+        if need_header:
+            w.writerow(header)
+        w.writerows(data_rows)
 
-    print(f"[overlap log] wrote {csv_path}")
+    print(f"[overlap log] appended {len(data_rows)} row(s) to {csv_path}")
+
+
+def _append_furniture_overlap_rejects_jsonl(
+    manifests_dir: str, entries: List[Dict[str, Any]]
+) -> None:
+    """逐行追加 ``furniture_overlap_rejects.jsonl``（scene_id + pair_count + 总体积，供审计）。"""
+    if not entries:
+        return
+    os.makedirs(manifests_dir, exist_ok=True)
+    path = os.path.join(manifests_dir, "furniture_overlap_rejects.jsonl")
+    ts = datetime.now(timezone.utc).isoformat()
+    with open(path, "a", encoding="utf-8") as f:
+        for e in entries:
+            rec = {
+                "timestamp": ts,
+                "preprocess_batch_id": e.get("preprocess_batch_id"),
+                "scene_id": e.get("scene_id"),
+                "overlap_count": e.get("overlap_count"),
+                "overlap_volume_m3_total": e.get("overlap_volume_m3_total"),
+            }
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    print(f"[overlap] appended {len(entries)} line(s) -> {path}")
+
+
+def _quarantine_overlap_scenes(
+    proc_root: str, entries: List[Dict[str, Any]], *, reject_subdir: str
+) -> None:
+    """将 ``entries`` 中场景目录从 ``proc_root/<scene_id>`` 移至 ``proc_root/<reject_subdir>/``。"""
+    if not entries:
+        return
+    dest_parent = os.path.join(proc_root, reject_subdir)
+    os.makedirs(dest_parent, exist_ok=True)
+    seen: set[str] = set()
+    for e in entries:
+        sid = str(e.get("scene_id") or "")
+        if not sid or sid in seen:
+            continue
+        seen.add(sid)
+        src = os.path.join(proc_root, sid)
+        if not os.path.isdir(src):
+            print(f"[quarantine] skip (not a dir): {src}")
+            continue
+        dst = os.path.join(dest_parent, sid)
+        if os.path.exists(dst):
+            raise FileExistsError(
+                f"quarantine target already exists: {dst} "
+                f"(remove or rename before re-running batch)"
+            )
+        shutil.move(src, dst)
+        print(f"[quarantine] {sid} -> {reject_subdir}/")
 
 
 def _maybe_append_overlap_log_entry(
@@ -538,13 +684,13 @@ def _maybe_append_overlap_log_entry(
 ) -> None:
     if opc is None or opc <= 0:
         return
-    fo = _read_furniture_overlap_block(scene_dir)
+    vol = _overlap_volume_m3_total_from_scene_dir(scene_dir)
     bucket.append(
         {
             "preprocess_batch_id": preprocess_batch_id,
             "scene_id": scene_id,
             "overlap_count": opc,
-            "furniture_overlap": fo if isinstance(fo, dict) else {},
+            "overlap_volume_m3_total": vol,
         }
     )
 
@@ -639,25 +785,8 @@ def _discover_blends_box(scenes_root: str) -> List[str]:
     if not os.path.isdir(scenes_root):
         return out
     for name in sorted(os.listdir(scenes_root)):
-        d = os.path.join(scenes_root, name)
-        if not os.path.isdir(d):
+        if name in _PROCESSED_TOPLEVEL_SKIP_DIRS or name.startswith("."):
             continue
-        bp = os.path.join(d, "scene.blend")
-        if os.path.isfile(bp):
-            out.append(bp)
-    if out:
-        return out
-    direct = os.path.join(scenes_root, "scene.blend")
-    if os.path.isfile(direct):
-        return [direct]
-    return out
-
-def _discover_blends_box(scenes_root: str) -> List[str]:
-    """先扫 ``root/<子目录>/scene.blend``；若没有，再试 ``root/scene.blend``（单场景目录）。"""
-    out: List[str] = []
-    if not os.path.isdir(scenes_root):
-        return out
-    for name in sorted(os.listdir(scenes_root)):
         d = os.path.join(scenes_root, name)
         if not os.path.isdir(d):
             continue
@@ -695,7 +824,7 @@ def _run_batch(
     """
     bpy_python = _find_bpy_python()
     generation_dir = _generation_dir()
-    root = scenes_root or os.path.normpath(os.path.join(generation_dir, "..", "SCENES2TEST"))
+    root = scenes_root or _scenes2test_root()
     if blend_paths is not None:
         blends = [os.path.abspath(p) for p in blend_paths]
     else:
@@ -886,19 +1015,22 @@ def _run_batch(
                 if manifest_ctx
                 else (os.path.dirname(log_path) if log_path else root)
             )
-            stem = (
-                manifest_ctx["preprocess_batch_id"]
-                if manifest_ctx
-                else (
-                    f"scenes2test_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
-                    f"_{uuid.uuid4().hex[:8]}"
-                )
-            )
             _write_overlap_scene_logs(
                 entries=overlap_log_entries,
                 out_dir=out_dir,
-                file_stem=stem,
             )
+
+        if manifest_ctx and overlap_log_entries:
+            md = manifest_ctx["manifests_dir"]
+            _append_furniture_overlap_rejects_jsonl(md, overlap_log_entries)
+            try:
+                _quarantine_overlap_scenes(
+                    _processed_root(),
+                    overlap_log_entries,
+                    reject_subdir=PROCESSED_REJECT_SUBDIR,
+                )
+            except OSError as ex:
+                print(f"[quarantine] ERROR: {ex}", file=sys.stderr)
 
     elapsed = time.perf_counter() - t0
     ran = len(blends) - skipped_count

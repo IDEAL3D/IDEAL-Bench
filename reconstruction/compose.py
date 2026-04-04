@@ -144,7 +144,7 @@ def parse_args() -> argparse.Namespace:
         "--info-json",
         type=Path,
         required=True,
-        help="data/.../info.json；从其 objects 字段作匹配底稿",
+        help="data/.../objects_in_view.json（或 info.json）；从其 objects 字段作匹配底稿",
     )
     p.add_argument(
         "--gt-json",

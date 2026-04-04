@@ -1,14 +1,11 @@
 """
-相机 / 视锥 / 场景几何工具：渲染相机与房间、视锥内资产枚举、AABB 与射线等。
+相机 / 房间几何 / 资产集合；**in-view 由 ``metadata.json`` 的 ``object_index_map`` +
+``instance_segmentation.png``（uint16）统计**，不再用 ``bpy.object.pass_index``。
 
-**镜头内资产与相机块**（``categories_in_view``、``asset_count_in_view``、``objects``、``intrinsic`` /
-``extrinsic`` / ``blender``）由 ``build_camview_payload_v2`` 汇总；家具体素重叠见 ``overlap_check``；
-完整 ``info.json`` 的组装与落盘见 ``extract_info.py``。
+``extract_gt.py``、``overlap_check`` 共用 ``collect_assets`` / ``factory_to_category`` / AABB 工具。
 
-``extract_gt.py`` 从本模块引用共享几何/分类函数。
-
-独立调试：``import preprocess_lib.extract_camview as m`` 并调用 ``m.find_visible_assets(cam)``；或
-``blender -b scene.blend --python preprocess_lib/extract_camview.py``（需 ``PYTHONPATH`` 含 ``generation`` 目录）。
+调试：在 ``PYTHONPATH`` 含 ``generation`` 下 ``blender -b scene.blend --python -c "..."`` 调用
+``build_instance_seg_view_payload``。
 """
 
 from __future__ import annotations
@@ -20,11 +17,22 @@ import re
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 
-from .defaults import GT_JSON_NAME
+from .defaults import GT_JSON_NAME, INSTANCE_SEGMENTATION_PNG, METADATA_JSON
 
 _GENERATION_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _GENERATION_DIR not in sys.path:
     sys.path.insert(0, _GENERATION_DIR)
+
+_IDL3D_ROOT = os.path.dirname(_GENERATION_DIR)
+if _IDL3D_ROOT not in sys.path:
+    sys.path.insert(0, _IDL3D_ROOT)
+from configs.constant import MIN_VISIBLE_PIXELS, canonicalize_asset_category
+
+
+class MissingMetadataInstanceMapError(RuntimeError):
+    """``metadata.json`` 缺失，或 ``instance_map.object_index_map`` 非 dict / 为空。"""
+
+    pass
 
 # ── 原 preprocess/config.py：GT/视锥 共用集合规则（无 bpy 依赖）────────────────
 ROOM_STRUCTURE_COLLECTIONS = frozenset(
@@ -47,8 +55,6 @@ ASSET_GT_EXCLUDE_COLLECTIONS = ROOM_STRUCTURE_COLLECTIONS | frozenset(
 FULL_DELETE_COLLECTION_PREFIXES = (
     "door_base_elements",
 )
-
-# 可选：仅保留「大件」类别时传给 ``find_visible_assets(..., category_whitelist=...)``
 
 def scene_id_from_output_dir(dir_path: str) -> str:
     """与含 ``scene.blend`` 的场景目录文件夹名一致（如 ``kitchen_medium_s1759680675``）。"""
@@ -257,9 +263,11 @@ def factory_to_category(obj_name: str) -> str:
     m = re.match(r"^([A-Za-z]+?)Factory", obj_name)
     if m:
         camel = m.group(1)
-        return re.sub(r"(?<!^)(?=[A-Z])", "_", camel).lower()
-    base = obj_name.split("(")[0].split(".")[0]
-    return re.sub(r"(?<!^)(?=[A-Z])", "_", base).lower() or "unknown"
+        cat = re.sub(r"(?<!^)(?=[A-Z])", "_", camel).lower()
+    else:
+        base = obj_name.split("(")[0].split(".")[0]
+        cat = re.sub(r"(?<!^)(?=[A-Z])", "_", base).lower() or "unknown"
+    return canonicalize_asset_category(cat)
 
 
 def extract_room_type(blend_path: str) -> str:
@@ -320,7 +328,7 @@ def identify_camera_room() -> Optional[Dict[str, Any]]:
     }
 
 
-# ── 视锥与资产收集（原 find_visible.py）────────────────────────────────────
+# ── 资产收集（与 GT 同源）──────────────────────────────────────────────────
 
 
 def collect_assets() -> list:
@@ -348,85 +356,133 @@ def collect_assets() -> list:
     ]
 
 
-def in_frustum(obj, cam) -> bool:
-    """True if any corner / centre of the asset AABB projects into the camera."""
-    import bpy
-    import mathutils
-    from bpy_extras.object_utils import world_to_camera_view
+def _load_instance_segmentation_u16(path: str):
+    """读取实例分割 PNG，须保留整型像素（16-bit PNG 仍为整型数组，不做 8-bit 衰减读取）。"""
+    import numpy as np
 
-    hierarchy = [obj] + list(obj.children_recursive)
-    meshes = [o for o in hierarchy if o.type == "MESH"]
+    if not os.path.isfile(path):
+        raise FileNotFoundError(path)
+    arr = None
+    err_chain: list[Exception] = []
+    try:
+        import imageio.v3 as iio
 
-    if meshes:
-        lo, hi = combined_aabb(meshes)
-        pts = [
-            mathutils.Vector((x, y, z))
-            for x in (lo.x, hi.x)
-            for y in (lo.y, hi.y)
-            for z in (lo.z, hi.z)
-        ]
-        pts.append((lo + hi) / 2)
-    else:
-        pts = [obj.matrix_world.to_translation()]
-        lo = hi = None
+        arr = np.asarray(iio.imread(path))
+    except Exception as e:
+        err_chain.append(e)
+        arr = None
+    if arr is None:
+        try:
+            import cv2
 
-    sc = bpy.context.scene
-    for p in pts:
-        ndc = world_to_camera_view(sc, cam, p)
-        if 0 <= ndc.x <= 1 and 0 <= ndc.y <= 1 and ndc.z > 0:
-            return True
+            raw = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+            if raw is None:
+                raise ValueError("cv2.imread returned None")
+            arr = np.asarray(raw)
+        except Exception as e:
+            err_chain.append(e)
+            arr = None
+    if arr is None:
+        try:
+            from PIL import Image
 
-    if lo is not None:
-        cl = cam.matrix_world.to_translation()
-        if lo.x <= cl.x <= hi.x and lo.y <= cl.y <= hi.y and lo.z <= cl.z <= hi.z:
-            return True
-
-    return False
-
-
-def find_visible_assets(cam_obj, category_whitelist: frozenset | None = None) -> List:
-    """
-    先 ``collect_assets()``，再按相机视锥筛选。
-
-    category_whitelist
-        ``None``：不过滤类别（与 GT 一致）。否则仅保留白名单类别（如 ``KEEP_CATEGORIES``）。
-    """
-    all_assets = collect_assets()
-
-    if category_whitelist is None:
-        kept = all_assets
-    else:
-        kept, skipped_cat = [], []
-        for a in all_assets:
-            cat = factory_to_category(a.name)
-            if cat in category_whitelist:
-                kept.append(a)
-            else:
-                skipped_cat.append((cat, a.name))
-        if skipped_cat:
-            print(f"[extract_camview] skipped {len(skipped_cat)} assets (category whitelist):")
-            for cat, name in skipped_cat:
-                print(f"    ✕ {cat:30s}  {name}")
-
-    visible = [a for a in kept if in_frustum(a, cam_obj)]
-    tag = "whitelisted " if category_whitelist is not None else ""
-    print(
-        f"[extract_camview] {len(visible)}/{len(kept)} {tag}assets visible "
-        f"(from {len(all_assets)} total in unique_assets)"
-    )
-    for a in visible:
-        print(f"    • {factory_to_category(a.name):30s}  {a.name}")
-    return visible
+            arr = np.array(Image.open(path))
+        except Exception as e:
+            err_chain.append(e)
+            raise RuntimeError(
+                f"无法读取实例分割图（须 uint16/整型）: {path}；已尝试 imageio、cv2.IMREAD_UNCHANGED、PIL"
+            ) from (err_chain[0] if err_chain else None)
+    if arr.ndim == 3:
+        arr = arr[:, :, 0]
+    if not np.issubdtype(arr.dtype, np.integer):
+        raise TypeError(
+            f"{path}: 实例分割须为整型 id 图，当前 dtype={arr.dtype}"
+        )
+    return arr
 
 
-# ── 镜头内语义 + 相机块（供 ``extract_info`` 并入完整 ``info.json``）────────────────
+def _load_object_index_map(blend_dir: str) -> Dict[str, str]:
+    path = os.path.join(blend_dir, METADATA_JSON)
+    if not os.path.isfile(path):
+        raise MissingMetadataInstanceMapError(
+            f"缺少 {METADATA_JSON}（objects_in_view 依赖 instance_map.object_index_map）: {path}"
+        )
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        raise MissingMetadataInstanceMapError(
+            f"无法解析 {path}: {e}"
+        ) from e
+    inst = data.get("instance_map")
+    if not isinstance(inst, dict):
+        raise MissingMetadataInstanceMapError(
+            f"{path}: 缺少或类型错误: instance_map（须为 object）"
+        )
+    oim = inst.get("object_index_map")
+    if not isinstance(oim, dict) or len(oim) == 0:
+        raise MissingMetadataInstanceMapError(
+            f"{path}: instance_map.object_index_map 须为非空 dict，当前={oim!r}"
+        )
+    return {str(k): str(v) for k, v in oim.items()}
 
-def _matrix_to_nested_v2(m) -> List[List[float]]:
-    return [[float(x) for x in row] for row in m]
+
+def _gt_id_to_metadata_base(gtid: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9]+", "_", str(gtid)).strip("_").lower() or "object"
 
 
-def _objects_from_gt_for_visible(blend_dir: str, visible) -> List[Dict[str, Any]]:
-    """按 ``find_visible_assets`` 顺序，从 ``GT.json`` 取同 ``id``（根物体名）的物体条目拷贝。"""
+def _metadata_label_to_base(label: str) -> str:
+    m = re.match(r"^(.+)_(\d{3})$", label)
+    if m:
+        return m.group(1)
+    return label
+
+
+def _build_metadata_base_to_gt_id(blend_dir: str) -> Dict[str, str]:
+    path = os.path.join(blend_dir, GT_JSON_NAME)
+    if not os.path.isfile(path):
+        raise FileNotFoundError(
+            f"缺少 {GT_JSON_NAME}，无法将 metadata 物体名对齐 GT id: {path}"
+        )
+    with open(path, encoding="utf-8") as f:
+        gt_data = json.load(f)
+    objs = gt_data.get("scene", {}).get("objects")
+    if not isinstance(objs, list):
+        return {}
+    base_to_id: Dict[str, str] = {}
+    for o in objs:
+        if not isinstance(o, dict) or o.get("id") is None:
+            continue
+        gid = str(o["id"])
+        b = _gt_id_to_metadata_base(gid)
+        if b in base_to_id and base_to_id[b] != gid:
+            print(
+                f"[extract_camview] WARN: metadata-base 冲突 {b!r} -> "
+                f"保留 {base_to_id[b]!r}，忽略 {gid!r}"
+            )
+        elif b not in base_to_id:
+            base_to_id[b] = gid
+    return base_to_id
+
+
+def _object_index_counts_from_png(seg_path: str) -> Dict[int, int]:
+    import numpy as np
+
+    arr = _load_instance_segmentation_u16(seg_path)
+    vals, counts = np.unique(arr.ravel(), return_counts=True)
+    out: Dict[int, int] = {}
+    for v, c in zip(vals.tolist(), counts.tolist()):
+        vi = int(v)
+        if vi <= 0:
+            continue
+        out[vi] = int(c)
+    return out
+
+
+def _objects_from_gt_for_names(
+    blend_dir: str, root_names_in_order: List[str]
+) -> List[Dict[str, Any]]:
+    """按 ``root_names_in_order`` 从 ``GT.json`` 拷贝 ``id`` 匹配的物体条目。"""
     path = os.path.join(blend_dir, GT_JSON_NAME)
     if not os.path.isfile(path):
         print(f"[extract_camview] WARN: missing {GT_JSON_NAME}, objects=[]")
@@ -440,60 +496,89 @@ def _objects_from_gt_for_visible(blend_dir: str, visible) -> List[Dict[str, Any]
     objs = gt_data.get("scene", {}).get("objects")
     if not isinstance(objs, list):
         return []
-    id_to_row = {str(o.get("id")): o for o in objs if isinstance(o, dict) and o.get("id") is not None}
+    id_to_row = {
+        str(o.get("id")): o for o in objs if isinstance(o, dict) and o.get("id") is not None
+    }
 
     out: List[Dict[str, Any]] = []
-    for o in visible:
-        key = o.name
+    for key in root_names_in_order:
         row = id_to_row.get(key)
         if row is None:
-            print(
-                f"[extract_camview] WARN: visible asset {key!r} has no matching GT id, skipped"
-            )
+            print(f"[extract_camview] WARN: in-view root {key!r} has no GT id, skipped")
             continue
         out.append(copy.deepcopy(row))
     return out
 
 
-def build_camview_payload_v2(cam_obj, scene_id: str, blend_dir: str) -> Dict[str, Any]:
-    import bpy
+def build_instance_seg_view_payload(scene_id: str, blend_dir: str) -> Dict[str, Any]:
+    """
+    自 ``metadata.json`` 的 ``object_index_map`` + ``instance_segmentation.png``（整型 / uint16）
+    统计各类 id 像素数；``>= MIN_VISIBLE_PIXELS``、map 可查且 metadata 名与 ``GT.json`` id
+    对齐的记入 in-view（等价于镜内像素 ∩ 全局 instance 表 ∩ GT 有效物体）。不读取 ``bpy.object.pass_index``。
+    """
+    seg_path = os.path.join(blend_dir, INSTANCE_SEGMENTATION_PNG)
+    if not os.path.isfile(seg_path):
+        raise FileNotFoundError(
+            f"缺少 {INSTANCE_SEGMENTATION_PNG}，无法构建 objects_in_view: {seg_path}"
+        )
 
-    from infinigen.core.util.camera import (
-        get_3x4_RT_matrix_from_blender,
-        get_calibration_matrix_K_from_blender,
+    object_index_map = _load_object_index_map(blend_dir)
+    base_to_gt = _build_metadata_base_to_gt_id(blend_dir)
+    counts = _object_index_counts_from_png(seg_path)
+
+    visible_gt_ids: set[str] = set()
+    for pi, pc in sorted(counts.items()):
+        if pc < MIN_VISIBLE_PIXELS:
+            continue
+        key = str(int(pi))
+        meta_name = object_index_map.get(key)
+        if meta_name is None:
+            print(
+                f"[extract_camview] WARN: pass_index {pi} ({pc}px) 不在 "
+                f"object_index_map 中，跳过"
+            )
+            continue
+        mb = _metadata_label_to_base(meta_name)
+        gid = base_to_gt.get(mb)
+        if gid is None:
+            print(
+                f"[extract_camview] WARN: metadata 物体 {meta_name!r} "
+                f"(base {mb!r}) 无对应 GT id，跳过"
+            )
+            continue
+        visible_gt_ids.add(gid)
+
+    names_ordered = sorted(visible_gt_ids)
+    objects_out = _objects_from_gt_for_names(blend_dir, names_ordered)
+    for o in objects_out:
+        c = o.get("category")
+        if c is not None:
+            o["category"] = canonicalize_asset_category(str(c))
+    categories = sorted(
+        {str(o["category"]) for o in objects_out if o.get("category") is not None}
     )
 
-    visible = find_visible_assets(cam_obj)
-    categories = sorted({factory_to_category(o.name) for o in visible})
-    objects_out = _objects_from_gt_for_visible(blend_dir, visible)
-
-    K = get_calibration_matrix_K_from_blender(cam_obj.data)
-    RT = get_3x4_RT_matrix_from_blender(cam_obj)
-    K_list = _matrix_to_nested_v2(K)
-    RT_list = _matrix_to_nested_v2(RT)
+    print(
+        f"[extract_camview] metadata + instance seg: {len(names_ordered)} GT 物体 in-view "
+        f"(≥{MIN_VISIBLE_PIXELS}px, GT-aligned), "
+        f"{len(categories)} categories"
+    )
+    for n in names_ordered:
+        print(f"    • {factory_to_category(n):30s}  {n}")
 
     return {
         "scene_id": scene_id,
         "categories_in_view": categories,
-        "asset_count_in_view": len(visible),
+        "categories_in_view_count": len(categories),
+        "objects_in_view_count": len(objects_out),
         "objects": objects_out,
-        "intrinsic": {
-            "K": K_list,
-            "fx": K_list[0][0],
-            "fy": K_list[1][1],
-            "cx": K_list[0][2],
-            "cy": K_list[1][2],
-        },
-        "extrinsic": {
-            "world_to_camera_rt": RT_list,
-        },
-        "blender": {
-            "matrix_world": _matrix_to_nested_v2(cam_obj.matrix_world),
-        },
     }
 
 
 if __name__ == "__main__":
-    cam = find_render_camera()
-    if cam:
-        find_visible_assets(cam)
+    import bpy
+
+    d = os.path.dirname(os.path.abspath(bpy.data.filepath)) if bpy.data.filepath else ""
+    if d:
+        sid = scene_id_from_output_dir(d)
+        build_instance_seg_view_payload(sid, d)

@@ -11,12 +11,15 @@ from typing import Any, Dict, List, Optional
 
 from .defaults import DEFAULT_LOG_FILENAME, GT_JSON_NAME
 from .core import (
+    FINAL_SCOPE_ROOT,
+    ROOM_TYPES,
     _append_preprocess_batches_jsonl,
     _append_preprocess_log_block,
     _assert_raw_scenes_ready_for_final,
     _copy_raw_scenes_to_processed,
     _default_log_path,
     _discover_scene_ids_under_raw,
+    _final_scope_normalized,
     _format_log_single,
     _load_raw_scene_rows,
     _load_scene_id_to_batch_csv,
@@ -25,42 +28,49 @@ from .core import (
     _preprocess_scenes_csv_path,
     _processed_manifests_dir,
     _processed_root,
-    _room_folder_name,
     _run_batch,
     _seed_from_scene_id,
+    _sync_sketch_to_scenes2test,
 )
 from .pipeline import _scene_output_dir, run_pipeline
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Box scene preprocessor (GT + info.json)")
+    parser = argparse.ArgumentParser(
+        description="Box scene preprocessor（GT + objects_in_view.json，内含家具重叠摘要）"
+    )
     parser.add_argument("--blend", type=str, default=None, help="Path to scene.blend")
     parser.add_argument(
         "--scenes-root",
         type=str,
         default=None,
         help=(
-            "Batch: parent dir with <scene_name>/scene.blend each, OR a single scene folder "
-            "containing scene.blend directly (not a path to the .blend file — use --blend for that). "
-            "Default: ../SCENES2TEST"
+            "非 --final：批处理根目录（各 <scene_id>/scene.blend）。"
+            "省略时默认 INFINIGEN/SCENES2TEST；"
+            "若指定路径则只处理该目录，且默认不从 SCENES_SKETCH 同步。"
         ),
+    )
+    parser.add_argument(
+        "--no-sync-sketch",
+        action="store_true",
+        help="非 --final：跳过 SCENES_SKETCH → SCENES2TEST 的目录复制，直接处理 --scenes-root 下已有数据。",
+    )
+    parser.add_argument(
+        "--sync-sketch-overwrite",
+        action="store_true",
+        help="非 --final：同步时若 SCENES2TEST 下已有同名场景目录则先删除再复制。",
     )
     parser.add_argument(
         "--no-semantics",
         action="store_true",
-        help="Do not write info.json (camera / categories / overlap)",
-    )
-    parser.add_argument(
-        "--no-overlap",
-        action="store_true",
-        help="Write info.json but skip furniture_overlap voxel computation",
+        help="只写 GT.json，不写 objects_in_view.json（亦不跑视锥与重叠筛查）",
     )
     parser.add_argument(
         "--log-file",
         type=str,
         default=None,
         metavar="PATH",
-        help=f"Append brief summary log (default: <REPO>/SCENES2TEST/{DEFAULT_LOG_FILENAME})",
+        help=f"Append brief summary log (default: INFINIGEN/SCENES2TEST/{DEFAULT_LOG_FILENAME})",
     )
     parser.add_argument(
         "--no-log",
@@ -83,14 +93,12 @@ def main() -> None:
         action="store_true",
         dest="final_mode",
         help=(
-            "Formal pipeline: SCENES_RAW -> SCENES_PROCESSED + manifests/ "
-            "(preprocess_batches.jsonl, *_preprocess_scenes.csv). "
-            "Requires --room-type. Scene list: flat SCENES_RAW/<room_type>_s*/ only; "
-            "SCENES_RAW/<room>/ (nested) is treated as archived and skipped. "
-            "CSV / --raw-batch-id never expands the set (intersection with disk only). "
-            "Each scene must have scene.blend and at least one .png (any basename). "
-            "Optional --raw-batch-id filters to rows in *_scenes.csv for those batch_ids. "
-            "Without --final, only --scenes-root (default SCENES2TEST) is used in-place; no SCENES_PROCESSED/manifests."
+            "正式管线：SCENES_RAW → INFINIGEN/SCENES_PROCESSED + manifests/；"
+            "批末将家具重叠场景移入 rejected_furniture_overlap/ 并写 manifests 重叠日志与 overlap_scenes.csv。 "
+            f"须配合 --room-type：{FINAL_SCOPE_ROOT!r} 表示 RAW 根目录平铺的十种房型 scene_id；"
+            f"否则为 {list(ROOM_TYPES)} 之一，处理 SCENES_RAW/<房型>/ 下子目录。 "
+            "可选 --raw-batch-id（仅非 root 时）按 RAW manifests 中 batch 过滤。 "
+            "非 --final：默认 SCENES_SKETCH → SCENES2TEST 同步后在 INFINIGEN/SCENES2TEST 批处理。"
         ),
     )
     parser.add_argument(
@@ -98,7 +106,10 @@ def main() -> None:
         type=str,
         default=None,
         metavar="TYPE",
-        help="Only with --final/--formal: e.g. bedroom (SCENES_RAW/manifests/{TYPE}_scenes.csv).",
+        help=(
+            f"仅 --final：{FINAL_SCOPE_ROOT!r}=RAW 根平铺全系场景；"
+            f"否则为房型名，处理 SCENES_RAW/<房型>/。合法房型：{list(ROOM_TYPES)}。"
+        ),
     )
     parser.add_argument(
         "--raw-batch-id",
@@ -107,9 +118,8 @@ def main() -> None:
         default=None,
         metavar="ID",
         help=(
-            "Only with --final: intersect flat-root SCENES_RAW/<scene_id>/ (discovered) with these "
-            "batch_id rows in RAW *_scenes.csv. CSV-only rows (e.g. scene only under SCENES_RAW/<room>/) "
-            "are never selected. Repeat to merge multiple batches. Omit for all discovered flat scenes."
+            "仅 --final 且 --room-type 为具体房型（非 root）：与 manifests 中 <房型>_scenes.csv 里 "
+            "所列 batch_id 求交。可重复。与 --room-type root 互斥。"
         ),
     )
     parser.add_argument(
@@ -125,8 +135,6 @@ def main() -> None:
     args = parser.parse_args()
 
     extra: List[str] = []
-    if args.no_overlap:
-        extra.append("--no-overlap")
     if args.no_semantics:
         extra.append("--no-semantics")
 
@@ -138,6 +146,12 @@ def main() -> None:
 
     if args.room_type and not args.final_mode:
         print("[ERROR] --room-type is only valid with --final (or --formal)", file=sys.stderr)
+        sys.exit(2)
+    if (args.no_sync_sketch or args.sync_sketch_overwrite) and args.final_mode:
+        print(
+            "[ERROR] --no-sync-sketch / --sync-sketch-overwrite 仅用于非 --final",
+            file=sys.stderr,
+        )
         sys.exit(2)
     if args.raw_batch_ids and not args.final_mode:
         print("[ERROR] --raw-batch-id is only valid with --final (or --formal)", file=sys.stderr)
@@ -151,7 +165,6 @@ def main() -> None:
             file=sys.stderr,
         )
         sys.exit(2)
-
     if args.final_mode:
         if args.blend:
             print("[ERROR] --final cannot be used with --blend", file=sys.stderr)
@@ -165,25 +178,40 @@ def main() -> None:
         if not args.room_type:
             print("[ERROR] --final requires --room-type", file=sys.stderr)
             sys.exit(2)
-        room_type = args.room_type.strip()
+        try:
+            scope = _final_scope_normalized(args.room_type)
+        except ValueError as e:
+            print(f"[ERROR] {e}", file=sys.stderr)
+            sys.exit(2)
         raw_ids: Optional[List[str]] = (
             list(args.raw_batch_ids) if args.raw_batch_ids else None
         )
-        discovered = _discover_scene_ids_under_raw(room_type)
-        if not discovered:
+        if raw_ids and scope == FINAL_SCOPE_ROOT:
             print(
-                f"[ERROR] SCENES_RAW 根目录下未发现待预处理场景："
-                f"请确认存在 SCENES_RAW/<scene_id>/（平铺，scene_id 形如 {_room_folder_name(room_type)}_s<seed>）。"
-                f"已收入 SCENES_RAW/{_room_folder_name(room_type)}/ 的场景不会参与 --final。",
+                "[ERROR] --raw-batch-id 与 --room-type root 不能同时使用（无单一 RAW CSV）。",
                 file=sys.stderr,
             )
             sys.exit(2)
 
-        batch_by_sid = _load_scene_id_to_batch_csv(room_type)
+        discovered = _discover_scene_ids_under_raw(scope)
+        if not discovered:
+            if scope == FINAL_SCOPE_ROOT:
+                hint = (
+                    "SCENES_RAW 根下无平铺 scene_id（十种房型前缀 + _s<seed>；"
+                    "不含 SCENES_RAW/bedroom 等子目录内场景）。"
+                )
+            else:
+                hint = (
+                    f"SCENES_RAW/{scope} 下无子目录 scene_id（须为 {scope}_s<seed>）。"
+                )
+            print(f"[ERROR] {hint}", file=sys.stderr)
+            sys.exit(2)
+
+        batch_by_sid = _load_scene_id_to_batch_csv(scope)
 
         if raw_ids:
             try:
-                csv_rows = _load_raw_scene_rows(room_type, raw_ids)
+                csv_rows = _load_raw_scene_rows(scope, raw_ids)
             except (FileNotFoundError, ValueError) as e:
                 print(f"[ERROR] {e}", file=sys.stderr)
                 sys.exit(2)
@@ -191,31 +219,27 @@ def main() -> None:
             scene_ids = sorted([s for s in discovered if s in allowed])
             if not scene_ids:
                 print(
-                    "[ERROR] 根目录平铺场景与 --raw-batch-id 在 CSV 中的登记无交集。"
-                    "（仅 SCENES_RAW/<scene_id>/ 可预处理；CSV 中已登记但不在根目录的场景会被忽略。）",
+                    "[ERROR] 磁盘发现与 --raw-batch-id 对应 CSV 行无交集。",
                     file=sys.stderr,
                 )
                 sys.exit(2)
             print(
-                f"[final] {len(scene_ids)} scene(s) under SCENES_RAW "
-                f"(discovered ∩ CSV batch filter: {', '.join(raw_ids)})"
+                f"[final] {len(scene_ids)} scene(s) (discovered ∩ CSV batch: {', '.join(raw_ids)})"
             )
         else:
             scene_ids = list(discovered)
-            print(
-                f"[final] {len(scene_ids)} scene(s) under SCENES_RAW "
-                f"(flat root only; SCENES_RAW/{_room_folder_name(room_type)}/ excluded)"
-            )
+            loc = "RAW 根平铺" if scope == FINAL_SCOPE_ROOT else f"SCENES_RAW/{scope}/"
+            print(f"[final] {len(scene_ids)} scene(s) ({loc})")
 
         pairs = [(sid, batch_by_sid.get(sid, "")) for sid in scene_ids]
 
         try:
-            _assert_raw_scenes_ready_for_final(room_type, scene_ids)
+            _assert_raw_scenes_ready_for_final(scope, scene_ids)
         except ValueError as e:
             print(f"[ERROR] {e}", file=sys.stderr)
             sys.exit(2)
         manifests_dir = _processed_manifests_dir()
-        preprocess_batch_id = _next_preprocess_batch_id(manifests_dir, room_type)
+        preprocess_batch_id = _next_preprocess_batch_id(manifests_dir, scope)
         seeds = [_seed_from_scene_id(sid) for sid in scene_ids]
         ts = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
         record = {
@@ -237,6 +261,7 @@ def main() -> None:
             try:
                 _copy_raw_scenes_to_processed(
                     scene_ids,
+                    scope=scope,
                     overwrite=bool(args.overwrite_processed),
                 )
             except (FileNotFoundError, FileExistsError, OSError) as e:
@@ -254,10 +279,10 @@ def main() -> None:
                 sys.exit(2)
             blend_paths.append(bp)
 
-        csv_path = _preprocess_scenes_csv_path(room_type, manifests_dir)
+        csv_path = _preprocess_scenes_csv_path(scope, manifests_dir)
         manifest_ctx: Dict[str, Any] = {
             "preprocess_batch_id": preprocess_batch_id,
-            "room_type": room_type,
+            "room_type": scope,
             "manifests_dir": manifests_dir,
             "preprocess_scenes_csv": csv_path,
             "scene_raw_batch_pairs": pairs,
@@ -286,7 +311,6 @@ def main() -> None:
             res = run_pipeline(
                 args.blend,
                 write_semantics=semantics_enabled,
-                compute_overlap=not args.no_overlap,
             )
         except BaseException as ex:
             elapsed = time.perf_counter() - t0
@@ -320,12 +344,20 @@ def main() -> None:
             print(f"[ERROR] Not a valid directory: {sr}", file=sys.stderr)
             sys.exit(2)
 
+    batch_root: Optional[str] = None
+    if args.scenes_root:
+        batch_root = os.path.abspath(os.path.expanduser(args.scenes_root))
+    else:
+        batch_root = None
+        if not args.no_sync_sketch:
+            _sync_sketch_to_scenes2test(overwrite=bool(args.sync_sketch_overwrite))
+
     print(
-        "[preprocess] 默认/试跑：就地处理 --scenes-root 下场景（默认 ../SCENES2TEST），"
-        "不写 SCENES_PROCESSED/manifests；正式管线使用 --final。"
+        "[preprocess] 试跑：INFINIGEN/SCENES2TEST（或 --scenes-root）；"
+        "默认先 SCENES_SKETCH→SCENES2TEST（可用 --no-sync-sketch 关闭）；不写 SCENES_PROCESSED/manifests。"
     )
     code = _run_batch(
-        args.scenes_root,
+        batch_root,
         extra,
         semantics_enabled=semantics_enabled,
         log_path=log_path,
