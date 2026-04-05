@@ -26,22 +26,22 @@ configs_indoor/working_space.gin
 **地毯**：`working_space` 场景里**不出现地毯约束**——合并 `_shared_constraints` 后，**开放办公 / 会议室**对 `rugs` / `rugs_max_per_room` / `floor_covering` 等做 **pop**（不从 `used_as` 删 `RugFactory`，以免与住宅 `living_space` 的完整 `home_asset_usage()` 混用概念时产生误解）。教室/图书馆不合并共享家具图。详见 **「关键改动」**。
 
 - **教室 / 图书馆**：`furniture_constraints` 返回**空** `cl.Problem`；不合并 `_shared_constraints` 的家具图；`single.py` **跳过** `solve_large`（与 `_shared_constraints` 无关）。顶灯为程序化 **AREA**。
-- **开放办公**：第一层（桌椅）程序化；第二层合并 **`_shared_constraints` + `_open_office_constraints`**（靠墙 **`Semantics.Storage`**：与会议室相同，**`SimpleBookcaseFactory` / `CellShelfFactory` / `LargeShelfFactory` / `SingleCabinetFactory` 均在用法表**；另加大盆栽、落地灯、**`ArmChairFactory` 扶手椅**，数量见 **§3.1**）；`single.py` 在 `procedural_layout` **之后**执行 **`solve_large`**；顶灯仍为程序化 **AREA**（`_lighting_constraints(..., mesh_ceiling=False)`，不要求 mesh 吸顶灯）。
+- **开放办公**：第一层（桌椅）程序化；第二层合并 **`_shared_constraints` + `_open_office_constraints`**（靠墙 **`Semantics.Storage`**：与会议室相同，**`SimpleBookcaseFactory` / `CellShelfFactory` / `LargeShelfFactory` / `SingleCabinetFactory` 均在用法表**；另加大盆栽、落地灯、**`ArmChairFactory` 扶手椅**，数量见 **§3.1**）。`single.py` 调度顺序为：`procedural_layout` → `refresh_state_trimesh`（开放办公）→（若 **`procedural_score_refinement_steps > 0`**）**`procedural_score_refinement`** → **`solve_large`**（第二层）；顶灯仍为程序化 **AREA**（`_lighting_constraints(..., mesh_ceiling=False)`，不要求 mesh 吸顶灯）。
 
 **Meeting-room**：约束与家具仍全部由 **`working_space`**（合并 `_shared_constraints` 等）描述；**顶光**与 `living_space` 一致：**`procedural_layout` 注入 Blender AREA（energy=9）后 `return False`**，不占用 `ProceduralLayoutFixed`，**`solve_large` 照常执行**（见 [GLOBAL_DESIGN.md §6.1](./GLOBAL_DESIGN.md)）。合并后再 **pop** 共享地毯项（与 open-office 相同）。**三档 `solve_steps_*`**：开放办公与会议室会跑 `solve_large`；教室/图书馆仍不因家具图执行该阶段（[GLOBAL_DESIGN.md §8](./GLOBAL_DESIGN.md)）。
 
-### 1.1 可选 `procedural_score_refinement`（SA 抛光）
+### 1.1 `procedural_score_refinement`（SA 抛光）
 
-当 gin 中 `procedural_score_refinement_steps > 0` 时，在 `procedural_layout`（及开放办公的 `solve_large`）之后，对 **非** `ProceduralLayoutFixed` 的地面家具做一次**短平移/旋转 SA**，减轻与固定工位的穿插。
+**代码顺序（权威）**：`infinigen_examples/single.py` 在 **`procedural_layout` 返回 `True`** 且 **`procedural_score_refinement_steps > 0`** 时，于 **`solve_large` 之前**运行本阶段（开放办公在 `refresh_state_trimesh` 之后立刻进入；**第二层墙柜 / 盆栽 / 灯 / 扶手椅尚未添加**）。在 greedy 域 **`on_floor_freestanding`** 上剔除带 **`ProceduralLayoutFixed`** 的物体后，对剩余实例做一次**短平移/旋转 SA**，再以 `reclamp_after_procedural_refine` 等收回内缩可走区域，减轻与固定工位网格的穿插。`configs_indoor/working_space.gin` 默认 **`procedural_score_refinement_steps = 320`**（置 **0** 则跳过整段）。
 
 | 层 | 语义标记 | 谁 | 典型来源 |
 |----|-----------|-----|----------|
 | **第一层** | `ProceduralLayoutFixed` | 教室/开放办公桌椅、讲台、图书馆 `library_block_*` | 仅程序化 |
-| **第二层** | 无该标 | **开放办公**：solver 加入的墙柜、盆栽、落地灯、**扶手椅**（`ArmChairFactory`）等 | 主求解器 + 可选 SA |
+| **第二层** | 无该标 | **开放办公**：仅由 **`solve_large`** 加入的墙柜、盆栽、落地灯、**扶手椅**（`ArmChairFactory`）等 | 主求解器 **`solve_large`**（**在 SA 之后**） |
 
-**教室 / 图书馆**：无第二层时 refine 的 movable 常为空，行为安全。
+**教室 / 图书馆**：无 `solve_large` 第二层；SA 阶段可动物体集合常为空，一般近似无位移，行为安全。
 
-**实现要点**：若物体未经 `dof.try_apply_relation_constraints`，需 `ensure_procedural_refinement_dof`；深穿插时 refine 会临时 `relaxed_pose_validity_for_refinement`，再由 `reclamp_after_procedural_refine` 按 **generator 类型**（墙柜 / 盆栽 / 灯）与固定键名 `desk_*`/`chair_*` 收回内缩地面矩形。
+**实现要点**：若物体未经 `dof.try_apply_relation_constraints`，需 `ensure_procedural_refinement_dof`；深穿插时 refine 会临时 `relaxed_pose_validity_for_refinement`，再由 `reclamp_after_procedural_refine` 按 **generator 类型**与固定键名 `desk_*`/`chair_*` 等把物体收回内缩地面矩形（与 `collision_refinement.py` 一致）。
 
 约束组织仍在 `working_space.py` + `collision_refinement.py`（方案 1，不与 living 抽全局共享模块）。
 
@@ -126,14 +126,14 @@ Gin 未覆盖时的总边界：`ROOM_SIZE_PRESETS[OpenOffice]` 常为 **(3.0, 8.
 - **`room_area` 含义**：与第二层书架 / 盆栽 / 落地灯相同，为 **`size_override` 四元组 `(min_w,max_w,min_d,max_d)` 的边界均值** 所算面积 \(\frac{w_\mathrm{min}+w_\mathrm{max}}{2}\times\frac{d_\mathrm{min}+d_\mathrm{max}}{2}\)，**不是** `floor_plan` 一次采样得到的真实 `w×d`。因此档位与 `core` 传入的 small/medium/large 边界一致。
 - **软目标**：当上限 **&gt; 0** 时，`open_office_armchairs` 鼓励多摆扶手椅，并使其与**地面工位**（`SimpleDeskFactory`）保持一定间距，减轻堵在工位旁。
 
-**管线**：
+**管线**（与 `single.py` 一致）：
 
 ```
 solve_rooms
 → procedural_layout（仅桌椅 + 顶灯）→ refresh trimesh
+→ procedural_score_refinement（若 procedural_score_refinement_steps > 0）
 → solve_large（on_floor_and_wall + on_floor_freestanding）
-→ 可选 procedural_score_refinement
-→ （教室式房型仍跳过 solve_medium / solve_small）
+→ （开放办公 / 教室 / 图书馆跳过 solve_medium / solve_small）
 → populate_assets → 门窗踢脚墙地顶 → …
 ```
 
@@ -165,7 +165,7 @@ solve_rooms
 #### 实现概要
 
 - **`procedural_layout` → `_place_classroom_grid`**：课桌椅与讲台程序化网格摆放；`desk_*` / `chair_*` / `classroom_podium` 带 **`ProceduralLayoutFixed`**（黑板为 `WallDecoration`，不参与地面 SA）。
-- **`furniture_constraints(classroom)`**：空 `cl.Problem`（大件不由该问题描述；管线仍执行 [GLOBAL_DESIGN.md §8](./GLOBAL_DESIGN.md) 三档求解）。
+- **`furniture_constraints(classroom)`**：空 `cl.Problem`（大件不由该问题描述）。因 `procedural_layout` 返回 **`True`**，`infinigen_examples/single.py` **不运行** `solve_large`，且 **`solve_medium` / `solve_small` 整段被跳过**（`if not procedural_applied` 分支）；与 [GLOBAL_DESIGN.md §8](./GLOBAL_DESIGN.md) 中「程序化房型」一行一致。
 
 #### 双模式（约 60% / 40%）
 
@@ -236,7 +236,7 @@ solve_rooms
 
 **Semantics**：`Semantics.Library`  
 **尺寸**：见 **§2.4**；与 `ROOM_SIZE_PRESETS[Library]` 一致。  
-**核心**：程序化网格 **`_place_library_grid`** 摆 `LibraryLargeShelfFactory`；每个 **`library_block_*`** 带 **`ProceduralLayoutFixed`**。当前无第二层落地家具时，可选的 `procedural_score_refinement` 对图书馆为 no-op。阅读桌等若未来接入 solver，文档需单独说明是否打固定标。
+**核心**：程序化网格 **`_place_library_grid`** 摆 `LibraryLargeShelfFactory`；每个 **`library_block_*`** 带 **`ProceduralLayoutFixed`**。当前无第二层落地家具；若在 gin 中 **`procedural_score_refinement_steps > 0`**，`single.py` 仍会在**本不执行的 `solve_large` 调用点之前**跑 SA；图书馆通常可动物体为空、近似 no-op。阅读桌等若未来接入 solver，文档需单独说明是否打固定标。
 
 #### 背靠背重叠问题的根因与修复（要点）
 
@@ -329,8 +329,8 @@ solve_rooms
 
 ## 开放办公：两层布局与碰撞
 
-- **`single.py`**：`procedural_layout`（工位）之后对开放办公 **refresh trimesh**，并在「非仅程序化」或 **open-office** 时仍跑 **`solve_large`**，保证第二层墙柜 / 盆栽 / 落地灯 / **扶手椅**参与主求解。
-- **`collision_refinement.py`**：`procedural_score_refinement` 对非 `ProceduralLayoutFixed` 地面家具做短 SA；`reclamp_after_procedural_refine` 按墙柜 / 盆栽 / 落地灯等 **generator** 把物体收回内缩地面矩形。办公场景通常无地毯约束（已 pop），refine 逻辑与地毯无关。
+- **`single.py`**：`procedural_layout`（工位）之后对开放办公 **refresh trimesh**；若 **`procedural_score_refinement_steps > 0`**，接着跑 **`procedural_score_refinement`**（在 **`solve_large` 之前**）；再跑 **`solve_large`**，保证第二层墙柜 / 盆栽 / 落地灯 / **扶手椅**参与主求解。
+- **`collision_refinement.py`**：`procedural_score_refinement` 对非 `ProceduralLayoutFixed` 的 `on_floor_freestanding` 物体做短 SA；`reclamp_after_procedural_refine` 按 **generator** 与键名规则收回内缩地面矩形（第二层墙柜等此时尚未加入）。办公场景通常无地毯约束（已 pop），refine 逻辑与地毯无关。
 
 ## 求解与资源占位
 

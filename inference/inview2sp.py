@@ -11,7 +11,7 @@
 
 运行示例::
 
-    cd IDL3D/inference
+    cd IDEAL/inference
     python inview2sp.py --scene-id kitchen_s511530340
     python inview2sp.py --scene-id kitchen_s511530340 --print-user-skeleton
 """

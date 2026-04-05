@@ -9,7 +9,7 @@
 
 **依赖与约定**
 
-- 路径：`INFINIGEN_IDL3D_ROOT`、`SCENES_*` 见 [`../configs/infinigen_paths.py`](../configs/infinigen_paths.py)；房型 canonical 见 [`../configs/constant.py`](../configs/constant.py)（`ROOM_TYPES`）。新场景目录名一般为 `{canonical}_s{seed}`。
+- 路径：`INFINIGEN_SUBMODULE_ROOT`、`SCENES_*` 见 [`../configs/infinigen_paths.py`](../configs/infinigen_paths.py)；房型 canonical 见 [`../configs/constant.py`](../configs/constant.py)（`ROOM_TYPES`）。新场景目录名一般为 `{canonical}_s{seed}`。
 - **如何运行**（参数、tmux、`--scenes-raw`、manifests、`core.py` 细节）：[**`../QUICKSTART/generate.md`**](../QUICKSTART/generate.md)。
 - **生成侧模块关系**（`core` / `metadata_builder` 等）：[`generate_lib/README.md`](generate_lib/README.md)。
 - `metadata.json` 字段约定：[`../docs/METADATA_SCHEMA.md`](../docs/METADATA_SCHEMA.md)。

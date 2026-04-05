@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-IDL3D 重建管线（完整流程）
+IDEAL 重建管线（完整流程）
 
 **任务发现**：从 ``result/<protocol>/<scene_id>/<model_id>.json`` 解析预测（逻辑见 ``runtime.py``）。
 
@@ -14,8 +14,8 @@ IDL3D 重建管线（完整流程）
   输入预测: result/<protocol>/<scene_id>/<model_id>.json
   输出:     同目录 {model_id}_render.json, {model_id}.blend, {model_id}.png
 
-用法（在仓库根 ``IDL3D/`` 下）::
-  cd /scratch2/f0080vw/IDL3D/reconstruction
+用法（先在仓库根目录，即 ``git clone`` 得到的文件夹内；默认文件夹名多为 ``IDEAL``）::
+  cd reconstruction
   conda activate infinigen
 
   python reconstruct.py --protocol floor # floor 参考系全部场景
@@ -24,7 +24,7 @@ IDL3D 重建管线（完整流程）
   python reconstruct.py --prediction result/floor/.../model.json --dry-run
 
   # 只跑 compose（仍会写出 _render.json），不跑 Blender 渲染
-  python reconstruction/reconstruct.py --scene-id ... --gemini --skip-render
+  python reconstruct.py --scene-id ... --gemini --skip-render
 """
 
 from __future__ import annotations
@@ -82,7 +82,7 @@ def resolve_gemini_prediction(project_dir: Path, protocol: str, scene_id: str) -
 def parse_args() -> argparse.Namespace:
     root = _project_dir()
     p = argparse.ArgumentParser(
-        description="IDL3D：compose.py → {model}_render.json → render.py → blend / png"
+        description="IDEAL：compose.py → {model}_render.json → render.py → blend / png"
     )
     p.add_argument(
         "--gemini",
@@ -119,10 +119,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--runner",
         choices=("bpy", "blender"),
-        default=os.environ.get("IDL3D_RECON_RUNNER", "bpy"),
+        default=os.environ.get("IDEAL_RECON_RUNNER", "bpy"),
         help=(
             "render.py：bpy 用当前 Python（需 pip bpy）；"
-            "blender 用 blender --background --python（需可执行文件）"
+            "blender 用 blender --background --python（需可执行文件）。"
+            "也可用环境变量 IDEAL_RECON_RUNNER 覆盖默认值。"
         ),
     )
     p.add_argument(

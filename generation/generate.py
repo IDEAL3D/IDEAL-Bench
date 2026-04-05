@@ -10,11 +10,11 @@ Common flags: ``--room-type`` / ``--room-types``, ``--num-scenes``, ``--room-siz
 ``--light-multiplier``, ``--gpu``, ``--start-seed``, ``--scenes-raw``, ``--overrides``.
 This entry point always runs coarse+render with denoising; for single-stage runs or custom I/O, use ``generate_lib/core.py`` directly.
 
-Examples (from ``IDL3D/generation``)::
+Examples (from ``IDEAL/generation``)::
 
-    python generate.py --room-type homestudio --num-scenes 20 --scenes-raw
-    python generate.py --room-types office library --num-scenes 3 --scenes-raw
-    python generate.py --room-type bathroom --render 640 --sample 256 --start-seed 42
+    python generate.py --room-type livingroom --num-scenes 20 --scenes-raw --gpu 3
+    python generate.py --room-type homestudio --num-scenes 20 --scenes-raw --gpu 2
+   
 
 Long-running jobs, tmux, manifests, and ``core.py`` notes: ``../QUICKSTART/generate.md``.
 """
@@ -41,7 +41,7 @@ from configs.constant import (
     WORKING_SPACE_ROOM_TYPES,
 )
 from configs.infinigen_paths import (
-    INFINIGEN_IDL3D_ROOT,
+    INFINIGEN_SUBMODULE_ROOT,
     SCENES_RAW_ROOT,
     SCENES_SKETCH_ROOT,
 )
@@ -101,17 +101,17 @@ ROOM_SIZE_PRESETS = ("small", "medium", "large", "xlarge", "auto")
 def get_render_gpu() -> str:
     """GPU id string when ``--gpu`` is omitted (forwarded to ``core`` as ``CUDA_VISIBLE_DEVICES``).
 
-    Reads ``IDL3D_GPU``; if unset, returns ``'2'``.
+    Reads ``IDEAL_GPU``; if unset, returns ``'2'``.
 
     Release note: remove this helper and all ``CUDA_VISIBLE_DEVICES`` injection in the generation
     stack; let the user's environment manage device selection.
     """
-    return os.environ.get("IDL3D_GPU", "2")
+    return os.environ.get("IDEAL_GPU", "2")
 
 
 def _try_infinigen_git_sha() -> str | None:
-    """Return ``infinigen-idl3d`` repo HEAD, or None if unavailable."""
-    sub = INFINIGEN_IDL3D_ROOT
+    """Return Infinigen submodule (``INFINIGEN_SUBMODULE_ROOT``) git HEAD, or None if unavailable."""
+    sub = INFINIGEN_SUBMODULE_ROOT
     if not (sub / ".git").exists():
         return None
     try:
@@ -479,7 +479,7 @@ def main() -> None:
         type=str,
         default=None,
         help=(
-            "GPU id for CUDA_VISIBLE_DEVICES (e.g. --gpu 2). If omitted, uses IDL3D_GPU env "
+            "GPU id for CUDA_VISIBLE_DEVICES (e.g. --gpu 2). If omitted, uses IDEAL_GPU env "
             "or default '2' (same as generate_lib.core.get_render_gpu)."
         ),
     )

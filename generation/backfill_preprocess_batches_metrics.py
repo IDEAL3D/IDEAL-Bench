@@ -2,11 +2,11 @@
 """
 从磁盘上的 GT.json / objects_in_view.json（及 CSV overlap_count 回退）补写 preprocess_batches.jsonl。
 场景目录默认在 ``INFINIGEN/SCENES_PROCESSED/<scene_id>/``；若已 promote，可传 ``--extra-scene-root`` 指向
-例如 ``IDL3D/data/scenes_v1``（脚本会按 ``<类别>/<scene_id>`` 查找，类别为 scene_id 里 ``_s`` 前一段）。
+例如 ``IDEAL/data/scenes_v1``（脚本会按 ``<类别>/<scene_id>`` 查找，类别为 scene_id 里 ``_s`` 前一段）。
 
 用法::
 
-    cd IDL3D/generation
+    cd IDEAL/generation
     python backfill_preprocess_batches_metrics.py --dry-run
     python backfill_preprocess_batches_metrics.py
     python backfill_preprocess_batches_metrics.py --extra-scene-root ../data/scenes_v1
@@ -138,7 +138,7 @@ def main() -> None:
         type=Path,
         metavar="DIR",
         help=(
-            "Extra root(s) with layout <room_prefix>/<scene_id>/ (e.g. IDL3D/data/scenes_v1). "
+            "Extra root(s) with layout <room_prefix>/<scene_id>/ (e.g. IDEAL/data/scenes_v1). "
             "Repeat for multiple roots."
         ),
     )

@@ -20,7 +20,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from configs.infinigen_paths import INFINIGEN_IDL3D_ROOT  # noqa: E402
+from configs.infinigen_paths import INFINIGEN_SUBMODULE_ROOT  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +101,7 @@ def _run_blender_dump_render_metadata(blend_path: Path, out_json: Path) -> None:
         str(out_json),
     ]
     logger.info("[CMD] %s", " ".join(cmd))
-    subprocess.run(cmd, check=True, cwd=str(INFINIGEN_IDL3D_ROOT))
+    subprocess.run(cmd, check=True, cwd=str(INFINIGEN_SUBMODULE_ROOT))
 
 
 def _render_metadata_from_bpy_open(blend_path: Path) -> dict | None:

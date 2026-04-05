@@ -18,7 +18,7 @@ def resolve_path_for_task(project_dir: Path, raw: Path) -> Path:
     """
     解析 ``--task-dir`` / ``--prediction``。
 
-    相对路径时：若 ``cwd / raw`` 存在则用其解析结果，否则用 ``<仓库根>/IDL3D/ / raw``。
+    相对路径时：若 ``cwd / raw`` 存在则用其解析结果，否则用 ``project_dir / raw``（IDEAL 仓库根下的相对路径）。
     """
     raw = raw.expanduser()
     if raw.is_absolute():
@@ -31,7 +31,7 @@ def resolve_path_for_task(project_dir: Path, raw: Path) -> Path:
 
 
 def result_root(project_dir: Path) -> Path:
-    """仓库根 ``IDL3D/result/``：推理、重建、benchmark 等按场景聚合的产物。"""
+    """仓库根 ``IDEAL/result/``：推理、重建、benchmark 等按场景聚合的产物。"""
     return project_dir / "result"
 
 

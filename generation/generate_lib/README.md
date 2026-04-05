@@ -12,7 +12,7 @@
 
 ## 依赖
 
-- Infinigen 工作副本：`../../infinigen-idl3d/`（与 `configs.infinigen_paths` 一致）。
+- Infinigen 工作副本：`configs.infinigen_paths.INFINIGEN_SUBMODULE_ROOT`（默认相对路径为仓库内子模块根目录）。
 - 房型与路径：同上，见仓库根 `configs/constant.py`、`configs/infinigen_paths.py`。
 
 ## 注意事项

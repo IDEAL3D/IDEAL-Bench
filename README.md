@@ -1,23 +1,27 @@
-# IDL3D
+# IDEAL
 
-本仓库是 **室内空间理解** 方向的 **数据集与评测（Datasets & Benchmarks）** 工程：在固定几何与 JSON 协议下，评测多模态大模型（如 GPT、Gemini、Qwen 等）从**单张室内图像**（以及规划中的**短视频**）中理解布局并输出结构化场景描述的能力；并支持在 Blender 中依据模型输出做**场景重建**与**渲染对比**，从**客观几何指标**与**主观图像指标**两方面打分。
+本仓库面向 **室内场景理解**，提供 **数据集与评测基准** 的工程实现：在统一几何与 JSON 协议下，评估多模态大模型（例如 GPT、Gemini、Qwen 等）从 **单张室内图像** 中推断布局并生成结构化场景描述的能力；路线图包含 **短视频** 等多帧输入扩展。评测流程支持在 Blender 中依据模型预测进行 **场景重建** 与 **对照渲染**，并从 **几何一致性** 与 **感知 / 主观质量** 等维度汇总指标。
 
-更完整的产品与流程说明见 [`项目资料/D&B项目.md`](项目资料/D&B项目.md)。该文档描述的整体管线为：**魔改 Infinigen 合成场景** → **预处理得到 GT / info** → **VLM 推理** → **硬指标** → **按预测重建并渲染** → **Judge VLM 软指标**；本仓库同时承载 **生成侧脚本**（`generation/`，依赖子模块中的 Infinigen）与 **评测侧**（推理、重建、后续 benchmark）。
+端到端流程可概括为：**定制 Infinigen 场景合成** → **预处理（GT、可见物体信息等）** → **VLM 推理** → **客观（几何）指标** → **基于预测的几何重建与渲染** → **评判型 VLM 等主观指标**。本仓库同时包含 **数据生成与预处理**（`generation/`，依赖 Git 子模块中的 Infinigen）以及 **评测链路**（推理、`reconstruction/`、`benchmarks/` 等）。
 
-**运行环境**：建议在 **Linux**（常见为 x86_64）上进行开发与复现。推理、重建、场景生成及 PyPI 上的 **`bpy`** 等依赖在 Linux 上最易一键安装；若使用 macOS / Windows，需自行核对各包是否提供对应轮子及版本。生成侧通常需要 **NVIDIA GPU**（显存依采样与分辨率而定）。
+**运行环境**：推荐在 **Linux x86_64** 上开发与复现；推理、重建、场景生成及 PyPI **`bpy`** 等在 Linux 上的安装路径成熟。若使用 macOS 或 Windows，需自行核对依赖是否提供对应构建产物及版本约束。**场景合成**通常需要 **NVIDIA GPU**（显存取决于 Cycles 采样数与输出分辨率等）。
 
 ---
 
 ### Python 依赖（分层）
 
-| 场景 | 安装命令（均在 **`IDL3D/`** 下） | 说明 |
+| 场景 | 安装命令（均在 **`IDEAL/`** 下） | 说明 |
 |------|----------------------------------|------|
-| **默认：生成 + 推理 + 重建** | `git submodule update --init infinigen-idl3d` 后 **`pip install -r requirements.txt`** | 根目录 [`requirements.txt`](requirements.txt) 通过 **`-r infinigen-idl3d/requirements.txt`** 拉齐 Infinigen 全量依赖，再追加 **`google-genai`**、**`openai`**。跑 **`generation/`** 必须用这一套（仅有 `numpy`/`bpy`/`mathutils` 不够）。 |
+| **默认：生成 + 推理 + 重建** | `git submodule update --init` 后 **`pip install -r requirements.txt`** | 根目录 [`requirements.txt`](requirements.txt) 通过 **`-r infinigen-ideal/requirements.txt`** 拉齐 Infinigen 全量依赖，再追加 **`google-genai`**、**`openai`**。跑 **`generation/`** 必须用这一套（仅有 `numpy`/`bpy`/`mathutils` 不够）。 |
 | **仅推理 + 重建**（不跑本地合成） | **`pip install -r requirements-minimal.txt`** | [`requirements-minimal.txt`](requirements-minimal.txt)：最小 **`numpy` / `bpy` / `mathutils`** + 云端客户端；**不包含** `gin-config`、`trimesh`、`scipy` 等，**无法**运行 `generation/`。 |
 
-**Infinigen 锁文件里有什么**：[`infinigen-idl3d/requirements.txt`](infinigen-idl3d/requirements.txt) 与上游管线一致，含 **`bpy`**、**`gin-config`**、**`numpy`**、**`opencv-python`**、**`trimesh`**、**`imageio`**、**`scipy`**、**`matplotlib`**、**`scikit-image`**、**`Pillow`**、**`OpenEXR`**、**`usd-core`** 等；并可能有 **`infinigen_internal`**、**`robosuite`** 等 **git+ssh** 可编辑依赖，无权限时需按团队 fork / 镜像改锁文件后再 `pip`。
+**Infinigen 锁文件里有什么**：[`infinigen-ideal/requirements.txt`](infinigen-ideal/requirements.txt) 与上游管线一致，含 **`bpy`**、**`gin-config`**、**`numpy`**、**`opencv-python`**、**`trimesh`**、**`imageio`**、**`scipy`**、**`matplotlib`**、**`scikit-image`**、**`Pillow`**、**`OpenEXR`**、**`usd-core`** 等；并可能有 **`infinigen_internal`**、**`robosuite`** 等 **git+ssh** 可编辑依赖，无权限时需按团队 fork / 镜像改锁文件后再 `pip`。
 
-生成入口在 **`generation/generate.py`**；后端在 **`generation/generate_lib/`**（如 `core.py`）；子进程在 **`infinigen-idl3d/`** 下以 **`python -m infinigen_examples.single`** 等方式启动。路径常量见 [`configs/infinigen_paths.py`](configs/infinigen_paths.py)。场景 `metadata.json` 字段约定见 [`docs/METADATA_SCHEMA.md`](docs/METADATA_SCHEMA.md)。
+**合成与预处理**：**`generation/generate.py`** 调用 **`generate_lib/`**（如 `core.py`）；**`generation/preprocess.py`** 调用 **`preprocess_lib/`**，自已有 `scene.blend` 产出 GT、`objects_in_view` 等。两栈并列、互不嵌套。Infinigen 子进程在 **`infinigen-ideal/`** 内以 **`python -m infinigen_examples.single`** 等形式启动。
+
+**默认输出根目录**见 [`configs/infinigen_paths.py`](configs/infinigen_paths.py)：产物落在与 IDEAL **仓库根同级**的 **`INFINIGEN/`** 树下——未指定 `--scenes-raw` 时为 **`SCENES_SKETCH`**；启用 **`--scenes-raw`** 时为 **`SCENES_RAW`**，并在 **`SCENES_RAW/manifests/`** 维护 **`generation_batches.jsonl`**、各房型 **`*_scenes.csv`** 等（若尚存在旧名 **`batches.jsonl`**，首次访问时由生成脚本迁移至 **`generation_batches.jsonl`**）。
+
+命令、参数与模块分工见 **`generation/README.md`**、**`generation/generate_lib/README.md`**（若本地工作区含由 `.gitignore` 排除的 `QUICKSTART/`，可另作环境与 tmux 等补遗）。**`metadata.json`** 字段见 [`docs/METADATA_SCHEMA.md`](docs/METADATA_SCHEMA.md)。
 
 **`bpy` 版本**：建议与 `.blend` 主版本一致（锁文件示例 **4.2.x**）；推理、重建与生成宜共用同一 minor 版本。
 
@@ -25,7 +29,7 @@
 |------|----------|
 | **`inference/infer.py`** | 任一档安装均含 **`google-genai`**、**`openai`**（minimal 或全量）。 |
 | **`reconstruction/`** | 需 **`bpy`** + **`mathutils`**（全量锁文件已含 `mathutils`；minimal 单独列出）。默认 **`--runner bpy`**；可选 **`--runner blender`** 并设置 **`BLENDER_EXECUTABLE`**。 |
-| **`generation/`**、**`preprocess_lib/`** | 仅 **全量** `requirements.txt`；依赖 Infinigen Python 与锁文件中的科学计算栈。 |
+| **`generation/`**（**`generate.py`**、**`preprocess.py`** 及 **`generate_lib/`** / **`preprocess_lib/`**） | 仅 **全量** `requirements.txt`；依赖 Infinigen Python 与锁文件中的科学计算栈。 |
 
 ---
 
@@ -37,7 +41,7 @@
 
 | 内容 | 说明 |
 |------|------|
-| **冻结的场景数据** | 收录在 `data/scenes/`（每场景一个子目录，含 `.blend`、渲染图、`scene_GT.json`、资产等，以你实际落盘为准）。 |
+| **冻结的场景数据** | `data/scenes/`：每场景一个子目录；常见内容包含 `.blend`、渲染图、`scene_GT.json`、资产等（具体以数据集发布或本地同步结果为准）。 |
 | **清单与划分** | `data/manifests/` 可存放入库后的场景列表、train/val/test 等 split（由搬运/发布脚本维护；与 InfiniGen 侧 `SCENES_RAW/manifests` 分离）。 |
 | **推理** | `inference/`：调用各 VLM；**system prompt** 见 `inference/prompts/`（运行时加载）；输出路径约定见实验配置。 |
 | **重建** | `reconstruction/`：根据模型生成的 JSON 在对应 `.blend` 中调整资产并由同一相机渲染。 |
@@ -46,31 +50,31 @@
 | **文档与约定** | `docs/`：几何规则（论文附录级）、协议草图（`schema_design.json`，人类可读，非校验器）。 |
 | **API 与本地配置** | `api/`：如 `check_api.py`、密钥 CSV 等；**整目录默认不提交**（见 `.gitignore` 与下文）。 |
 
-**场景生成**：矩形单房间管线入口在 **`generation/`**（`generate.py` → `generate_lib/core.py`），依赖 Git 子模块 **`infinigen-idl3d/`**（魔改 Infinigen）。输出目录约定见 `generation/` 内脚本说明（如 `SCENES_SKETCH/`、`SCENES_RAW/`）。**预处理**（GT.json、info.json、overlap 过滤等）可在本仓库其它脚本或外部流水线中完成；处理完成后将场景**拷贝或同步**至 `data/scenes/`、`data/scenes2test/` 等评测用路径。
+**场景合成与预处理**：矩形单房间合成由 **`generation/generate.py`** 驱动（**`generate_lib/core.py`**）；GT 与 **`objects_in_view`** 等由 **`generation/preprocess.py`**（**`preprocess_lib/`**）从已有 `scene.blend` 产出，详见 **`generation/README.md`**。二者均依赖子模块 **`infinigen-ideal/`**（定制 Infinigen）。默认落盘位置见上文 **`infinigen_paths`** 说明；纳入评测前，请将场景**拷贝或同步**至 `data/scenes/`、`data/scenes2test/` 等路径。对旧版 RAW 的一次性补缺（实例分割、`metadata` 等，非主链路）见 **`generation/README.md`** / **`generation/generate_lib/README.md`** 中的可选工具说明。
 
 ---
 
 ## 目录结构
 
-**Git**：根目录 [`.gitignore`](.gitignore) 忽略 `data/`、`result/`、`api/`（大数据与测试场景、运行产物、本地 API 密钥与辅助脚本）。克隆仓库后需在本地自备数据目录与 `api/` 配置；下文路径均为**工作区约定**。
+下列树状结构**仅列出由 Git 跟踪的目录与文件**。根目录 [`.gitignore`](.gitignore) 另排除 **`data/`**、**`result/`**、**`api/`**、**`tools/`**、**`QUICKSTART/`** 等路径（大数据、运行产物、本地密钥与可选笔记等）；克隆后需在本地按需创建，命名与用途仍适用下文「仓库职责」及 **`result/`**、**`api/`** 等约定小节。
 
 ```
-IDL3D/
+IDEAL/
 ├── README.md                 # 本说明
-├── requirements.txt          # 默认全量：-r infinigen-idl3d + 推理客户端
+├── requirements.txt          # 默认全量：-r infinigen-ideal + 推理客户端
 ├── requirements-minimal.txt  # 仅推理 + 重建（不跑 generation/）
 ├── docs/                     # 几何规则、数据形状说明（附录级文档；非 JSON Schema 校验器）
 ├── 项目资料/                 # 设计文档与笔记（如 D&B 项目说明）
-├── generation/               # Infinigen 场景生成入口（依赖子模块 infinigen-idl3d）
-├── infinigen-idl3d/          # （Git 子模块）魔改 Infinigen 源码与上游依赖锁文件
-├── data/                     # （默认不提交）冻结数据与测试场景
-│   ├── scenes/               # 收录后的场景数据（每场景一目录）
-│   ├── scenes2test/          # 推理用测试场景（每场景一目录，含 image.png 等）
-│   └── manifests/            # 场景清单、划分、版本元数据等
+├── generation/               # 场景合成与预处理（详见目录内 README）
+│   ├── generate.py           # 批量合成入口（→ generate_lib/）
+│   ├── preprocess.py         # 预处理入口（→ preprocess_lib/）
+│   ├── generate_lib/
+│   ├── preprocess_lib/
+│   └── backfill_preprocess_batches_metrics.py  # 批次指标回填（维护用，非主链路）
+├── infinigen-ideal/          # Git 子模块：定制 Infinigen（远端见 .gitmodules）
 ├── configs/
 │   ├── schema/               # 输出 / GT 的格式与版本约定
 │   └── experiments/          # 实验与模型批量运行配置
-├── result/                   # （默认不提交）按场景聚合：模型 JSON、重建图、可选 .blend、benchmark 结果等（见下）
 ├── inference/
 │   ├── infer.py              # 云端 API 推理入口（示例）
 │   ├── migrate_runs_to_result.py  # 旧 runs/ → result/（一次性）
@@ -83,20 +87,15 @@ IDL3D/
 │   ├── match.py              # 仅类别队列配对、占位与 nullify
 │   ├── runtime.py            # result 路径布局、任务发现、bpy / Blender 可执行文件
 │   └── blender_scripts/      # render.py（依赖 bpy）
-├── benchmarks/
-│   ├── metrics/
-│   │   ├── objective/        # 几何等硬指标
-│   │   └── subjective/       # 图像/主观相关指标
-│   ├── protocols/            # 评测协议说明
-│   └── leaderboard/          # 榜单生成等（可选）
-└── api/                      # （默认不提交）本地 API 检测与密钥
-    ├── check_api.py          # 本地检测 Gemini / OpenAI 等是否可用（可选）
-    └── secrets/
-        ├── README.md         # 放置说明（仅本地）
-        └── api_keys.csv      # provider / model / api_key / base_url（勿提交）
+└── benchmarks/
+    ├── metrics/
+    │   ├── objective/        # 几何等硬指标
+    │   └── subjective/       # 图像/主观相关指标
+    ├── protocols/            # 评测协议说明
+    └── leaderboard/          # 榜单生成等（可选）
 ```
 
-### `result/`（仓库根：推理、重建与 benchmark 产物）
+### 运行产物布局（仓库根 `result/`，默认由 `.gitignore` 排除）
 
 按 **protocol → 场景** 一层目录；**场景文件夹内不再分子目录**（无 `json/`、`image/`、`blend/`），`{model_id}.json`、`.png`、`_reconstructed.blend` 与后续 **benchmark** 导出的 JSON 等**平铺并列**，便于大规模跑批时不必为未生成 `.blend` 的场景留空子文件夹。**GT** 仍在 `data/scenes2test/{scene_id}/GT.json`。
 
@@ -116,7 +115,7 @@ IDL3D/
 
 入口：**`reconstruction/reconstruct.py`**。顺序：**`compose.py`**（内部 **`match.py`** 做类别队列配对；再写回预测几何、与 **`GT.json`** 合并）→ 写出同目录 **`{model_id}_render.json`** → **`blender_scripts/render.py`** 读该 JSON，另存 **`{model_id}.blend`** 并渲染 **`{model_id}.png`**。源 **`scene.blend`** 默认 **`data/scenes2test/{scene_id}/scene.blend`**（不覆盖）。
 
-**批量**（在 **`IDL3D/`** 下执行；会顺序处理每个「场景 × 模型」预测；stderr 会打印任务总数）：
+**批量**（在 **`IDEAL/`** 下执行；会顺序处理每个「场景 × 模型」预测；stderr 会打印任务总数）：
 
 - **仅 `floor`**：**`--protocol floor`**，或等价地 **`--task-dir result/floor`**
 - **仅 `camera`**：**`--protocol camera`**，或 **`--task-dir result/camera`**
@@ -129,14 +128,14 @@ IDL3D/
 **`--dry-run`** 示例：
 
 ```bash
-cd /path/to/IDL3D
+cd /path/to/IDEAL
 python reconstruction/reconstruct.py --protocol floor --dry-run
 python reconstruction/reconstruct.py --task-dir result/camera --dry-run
 ```
 
-相对路径会先按**当前工作目录**解析，否则按**仓库根 `IDL3D/`** 解析。
+相对路径会先按**当前工作目录**解析，否则按**仓库根 `IDEAL/`** 解析。
 
-**重建如何调用 Blender**：默认 **`--runner bpy`**（**`IDL3D_RECON_RUNNER`** 可覆盖）。**渲染与相机**：使用 **`scene.blend` 内活动相机**及文件内 Render 设置。
+**重建如何调用 Blender**：默认 **`--runner bpy`**（**`IDEAL_RECON_RUNNER`** 可覆盖）。**渲染与相机**：使用 **`scene.blend` 内活动相机**及文件内 Render 设置。
 
 **迁移**：历史 **`runs/`** → **`python inference/migrate_runs_to_result.py`**；若曾使用嵌套的 **`inference/result/.../json/`** → **`python inference/migrate_nested_result_to_flat_root.py`**。任务发现逻辑兼容旧路径解析，新输出始终写入 **`result/`** 扁平布局。
 
@@ -146,15 +145,15 @@ python reconstruction/reconstruct.py --task-dir result/camera --dry-run
 - **`compose.py`**：对配对执行 **`apply_object_overlay`**（预测几何写回），再 **`merge_gt_with_info_layer`** 与全文 **`GT.json`** 合并，写出 **`{model_id}_render.json`**。
 - **`render.py`**（Blender）：按 **`PREPROCESS_DESIGN.md` §3** 将 JSON 写回场景物体（`protocol=floor`）：`position` / `dimensions` / `rotation_yaw`；Empty 零尺寸时用子树 MESH 世界 AABB 估算缩放。**`protocol=camera`** 下不写回几何。
 
-### API 密钥与 `api/` 目录
+### API 密钥与本地配置（`api/`，默认由 `.gitignore` 排除）
 
-- **当前 `.gitignore`**：忽略整个 `api/`，因此 **`check_api.py`、`secrets/api_keys.csv` 等都不会进入远程仓库**，密钥与工作流脚本仅保留在本地，适合「仓库公开、密钥不外泄」。
+- **当前 `.gitignore`**：忽略整个 `api/`，因此 **`check_api.py`、`secrets/api_keys.csv` 等不会进入远程仓库**，密钥与工作流脚本仅保留在本地，适合「仓库公开、密钥不外泄」。
 - **本地配置**：在 `api/secrets/api_keys.csv` 中按列填写（与 `inference/infer.py`、`api/check_api.py` 读取格式一致：`provider`、`model`、`api_key`、`base_url`）；详见 `api/secrets/README.md`（若存在）。
 - **若希望把 `check_api.py` 提交到 GitHub、仅忽略密钥**：可将 `.gitignore` 改为只忽略 `api/secrets/*`，并在 `api/` 下提供可提交的 `api_keys.example.csv`（列名同上、无真实密钥）。
 
 ### 开源模型权重（如 Qwen）
 
-权重放在**仓库外**的专用目录（例如服务器上的 `MODELS/` 或 `~/models`），通过环境变量或实验配置传入路径；**不要**把大文件放进 `IDL3D/inference/models/`（该目录仅放代码）。若目录命名为 `MODELS`，与「推理代码」语义区分清晰，完全可以。
+权重宜放在**仓库外**的专用目录（例如 `MODELS/`、`~/models`），通过环境变量或实验配置传入；**勿将**大体积权重放入 `IDEAL/inference/models/`（该目录仅承载封装代码）。单独目录命名有助于与推理源码区分。
 
 ---
 

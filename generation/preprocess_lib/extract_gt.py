@@ -5,7 +5,7 @@ Enumerates top-level assets under ``unique_assets`` after excluding structure, d
 
 - ``scene_id``: scene directory name (aligned with ``objects_in_view.json``).
 - ``position``: root object ``matrix_world.translation``.
-- ``dimensions``: merged subtree MESH AABB in **asset-root local space** as ``[dx,dy,dz]`` (``combined_aabb_root_local``); see repo docs (e.g. ``IDL3D/docs/geometric_rules_floor.md``).
+- ``dimensions``: merged subtree MESH AABB in **asset-root local space** as ``[dx,dy,dz]`` (``combined_aabb_root_local``); see repo docs (e.g. ``IDEAL/docs/geometric_rules_floor.md``).
 - ``rotation_yaw``: semantic forward vs. +Y, ``atan2(-fx,fy)`` in degrees; see ``semantic_yaw_degrees``. Category ``blackboard`` falls back to **root-local +Y** when Subpart.Front is missing (not default +X). Category ``side_table`` (``SideTableFactory`` default ``(w,w,h)`` square top) **forces 0** when horizontal ``dimensions`` are nearly square. Lamps (``lamp`` / ``*_lamp``) and potted plants with ``_plant_`` in the category name have **no stable semantic heading**; JSON stores **`null`** (eval should skip yaw).
 - ``resolve_room_metrics_box``: derives ``scene.room.size`` ``[W,D,H]`` from ``unique_assets:room_floor`` et al. (legacy ``room_geometry.py`` role).
 """
@@ -40,9 +40,9 @@ _GENERATION_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _GENERATION_DIR not in sys.path:
     sys.path.insert(0, _GENERATION_DIR)
 
-_IDL3D_ROOT = os.path.dirname(_GENERATION_DIR)
-if _IDL3D_ROOT not in sys.path:
-    sys.path.insert(0, _IDL3D_ROOT)
+_REPO_ROOT = os.path.dirname(_GENERATION_DIR)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 from configs.constant import ROOM_TYPES
 

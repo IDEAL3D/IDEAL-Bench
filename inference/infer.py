@@ -19,10 +19,10 @@ infer.py — 业务逻辑（只做推理入口，不做评测）
 1. 扫描场景根目录下一级子目录；若存在约定图像文件名则作为候选任务（scene_id = 目录名）。
 2. 从同目录 `objects_in_view.json`（或旧版 `info.json`）读取 `categories_in_view` 作为 **assets_list**；并注入 **allowed_room_types**。
 3. 自 CSV 读取所选模型的 provider / 密钥等；将 system prompt + **user 文案（assets_list + allowed_room_types）** 与图像一并发送。**不把场景目录名传给模型**；Gemini 上传前将图片复制到临时中性路径，避免 API 侧携带含场景名的路径。
-4. 将模型返回解析为 JSON 并保存为 `result/{protocol}/{scene_id}/{model_id}.json`（仓库根下 `result/`，与同场景其它产物并列）。
+4. 将模型返回解析为 JSON 并保存为 `result/{protocol}/{scene_id}/{model_id}.json`（``IDEAL`` 根目录下 ``result/``，与同场景其它产物并列）。
 
-用法示例（在仓库根 IDL3D/ 下）：
-  cd /scratch2/f0080vw/IDL3D/inference
+用法示例（先在仓库根目录，即 ``git clone`` 得到的文件夹内；默认文件夹名多为 ``IDEAL``）：
+  cd inference
 
   python infer.py --model gemini-3-flash-preview --protocol floor
   python infer.py --model gpt-5.2-2025-12-11 --protocol camera --scene-prefix bedroom
@@ -131,7 +131,7 @@ def _copy_image_to_temp_for_upload(image_path: str) -> str:
     调用方负责在使用后 os.unlink。
     """
     suffix = os.path.splitext(image_path)[1] or ".png"
-    fd, tmp = tempfile.mkstemp(suffix=suffix, prefix="idl3d_")
+    fd, tmp = tempfile.mkstemp(suffix=suffix, prefix="ideal_")
     os.close(fd)
     shutil.copyfile(image_path, tmp)
     return tmp

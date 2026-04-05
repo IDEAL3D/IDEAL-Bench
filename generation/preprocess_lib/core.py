@@ -40,7 +40,7 @@ FINAL_SCOPE_ROOT = "root"
 
 
 def _generation_dir() -> str:
-    """``IDL3D/generation`` (parent of ``preprocess_lib``)."""
+    """``IDEAL/generation`` (parent of ``preprocess_lib``)."""
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -67,7 +67,7 @@ def _repo_root() -> str:
 
 
 def _infinigen_repo_root() -> str:
-    """Sibling ``INFINIGEN`` repo root to IDL3D (tree containing SCENES_SKETCH / SCENES_RAW)."""
+    """Sibling ``INFINIGEN`` repo root to IDEAL (tree containing SCENES_SKETCH / SCENES_RAW)."""
     return os.path.normpath(os.path.join(_repo_root(), "..", "INFINIGEN"))
 
 

@@ -6,7 +6,7 @@ Room types are canonical ids in ``configs.constant.ROOM_TYPES``; default output 
 ``SCENES_SKETCH/{type}_s{seed}/`` (override with ``--scenes-root`` / ``--output_folder``).
 For batch runs and RAW manifests, prefer ``generation/generate.py``; see ``../../QUICKSTART/generate.md`` and ``../../docs/LIMITATION.md``.
 
-Examples (from ``IDL3D/generation``)::
+Examples (from ``IDEAL/generation``)::
 
     python generate_lib/core.py
     python generate_lib/core.py --room-type livingroom --num-scenes 3 --room-size large
@@ -22,10 +22,12 @@ import json
 import logging
 import os
 import random
+import re
 import secrets
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -41,7 +43,7 @@ from configs.constant import (
     WORKING_SPACE_ROOM_TYPES,
     infinigen_room_type,
 )
-from configs.infinigen_paths import INFINIGEN_IDL3D_ROOT, SCENES_SKETCH_ROOT
+from configs.infinigen_paths import INFINIGEN_SUBMODULE_ROOT, SCENES_SKETCH_ROOT
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 _GEN_LIB_DIR = SCRIPT_DIR
@@ -209,12 +211,12 @@ FURNITURE_SIZE_OVERRIDE_GIN_TEMPLATE = "{module}.furniture_constraints.size_over
 def get_render_gpu() -> str:
     """Return GPU id string used when ``--gpu`` is omitted (passed as ``CUDA_VISIBLE_DEVICES``).
 
-    Reads environment variable ``IDL3D_GPU``; if unset, returns ``'2'``.
+    Reads ``IDEAL_GPU``; if unset, returns ``'2'``.
 
     Release note: remove this helper and every ``CUDA_VISIBLE_DEVICES`` assignment in this
     module; let the user's environment manage device visibility.
     """
-    return os.environ.get("IDL3D_GPU", "2")
+    return os.environ.get("IDEAL_GPU", "2")
 
 
 def _size_override_gin_value(tup: tuple[float, float, float, float]) -> str:
@@ -222,8 +224,49 @@ def _size_override_gin_value(tup: tuple[float, float, float, float]) -> str:
     return f"({tup[0]},{tup[1]},{tup[2]},{tup[3]})"
 
 
+def _tee_pipe_to_buffer_and_stream(pipe, buffer: list[str], stream) -> None:
+    """Read text lines from ``pipe``, append to ``buffer``, copy to ``stream`` (live progress)."""
+    try:
+        assert pipe is not None
+        for line in iter(pipe.readline, ""):
+            buffer.append(line)
+            stream.write(line)
+            stream.flush()
+    finally:
+        try:
+            pipe.close()
+        except Exception:
+            pass
+
+
+def _stderr_stdout_only_blender_unfreed_blocks(stderr: str | None, stdout: str | None) -> bool:
+    """True if Blender reported only shutdown 'Not freed memory blocks' noise (see Blender #96953)."""
+    text = f"{stdout or ''}\n{stderr or ''}"
+    if "Not freed memory blocks" not in text:
+        return False
+    fatal = (
+        "Traceback (most recent call last)",
+        "System is out of GPU memory",
+        "CUDA error",
+        "Fatal Python error",
+        "Segmentation fault",
+    )
+    if any(s in text for s in fatal):
+        return False
+    err_lines = re.findall(r"(?m)^Error:\s*(.+)$", text)
+    if not err_lines:
+        return False
+    return all(
+        line.strip().startswith("Not freed memory blocks") for line in err_lines
+    )
+
+
 def _run(cmd: list[str], gpu: str | None = None) -> None:
-    """Run ``cmd`` as a subprocess with cwd at ``infinigen-idl3d`` root."""
+    """Run ``cmd`` as a subprocess with cwd at ``INFINIGEN_SUBMODULE_ROOT``.
+
+    Stream stdout/stderr live (``coarse`` + ``render`` can take many minutes). After exit,
+    optionally treat Blender's shutdown ``Not freed memory blocks`` exit code 1 as success.
+    """
     logger.info("[CMD] %s", " ".join(cmd))
     env = None
     if gpu is not None:
@@ -231,7 +274,46 @@ def _run(cmd: list[str], gpu: str | None = None) -> None:
         env = os.environ.copy()
         env["CUDA_VISIBLE_DEVICES"] = gpu
         logger.info("CUDA_VISIBLE_DEVICES=%s", gpu)
-    subprocess.run(cmd, check=True, cwd=str(INFINIGEN_IDL3D_ROOT), env=env)
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(INFINIGEN_SUBMODULE_ROOT),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+    )
+    out_buf: list[str] = []
+    err_buf: list[str] = []
+    assert proc.stdout is not None and proc.stderr is not None
+    t_out = threading.Thread(
+        target=_tee_pipe_to_buffer_and_stream,
+        args=(proc.stdout, out_buf, sys.stdout),
+        daemon=True,
+    )
+    t_err = threading.Thread(
+        target=_tee_pipe_to_buffer_and_stream,
+        args=(proc.stderr, err_buf, sys.stderr),
+        daemon=True,
+    )
+    t_out.start()
+    t_err.start()
+    rc = proc.wait()
+    t_out.join()
+    t_err.join()
+    stdout_text = "".join(out_buf)
+    stderr_text = "".join(err_buf)
+    if rc == 0:
+        return
+    if rc == 1 and _stderr_stdout_only_blender_unfreed_blocks(stderr_text, stdout_text):
+        logger.warning(
+            "Ignored subprocess exit code 1: Blender reported only unfreed memory blocks "
+            "at shutdown (benign leak-detector noise)."
+        )
+        return
+    raise subprocess.CalledProcessError(rc, cmd, stdout_text, stderr_text)
 
 
 FINAL_KEEP_NAMES = frozenset(
@@ -557,7 +639,7 @@ def main() -> None:
         default=None,
         help=(
             "GPU id(s) for CUDA_VISIBLE_DEVICES, e.g. --gpu 2. If omitted, uses get_render_gpu() "
-            "(IDL3D_GPU env or default '2'). Comma-separated for multiple devices, e.g. --gpu 2,6."
+            "(IDEAL_GPU env, else default '2'). Comma-separated for multiple devices, e.g. --gpu 2,6."
         ),
     )
     parser.add_argument(

@@ -136,7 +136,7 @@ def run_compose(
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="IDL3D：match → 写回几何 → 合并 GT → {model_id}_render.json"
+        description="IDEAL：match → 写回几何 → 合并 GT → {model_id}_render.json"
     )
     p.add_argument("--blend", type=Path, required=True, help="场景 scene.blend（预留）")
     p.add_argument("--prediction", type=Path, required=True, help="VLM 预测 JSON")

@@ -158,7 +158,8 @@ configs_indoor/
 ### 6.3 渲染曝光与天空光（`base_indoors.gin`）
 
 - **`configure_render_cycles.exposure = 3`** → film_exposure 约 **2³ = 8** 倍亮度。  
-- 其它：`denoise = False`，`adaptive_threshold = 0.005`；采样数由 `core.py` 的 `--render-samples` 控制（默认 128）。  
+- **降噪**：`base_indoors.gin` 中默认为 `configure_render_cycles.denoise = False`；**推荐入口** `generation/generate_lib/core.py` 在拼 `single` 的 `--overrides` 时显式写入 **`configure_render_cycles.denoise=True`**，并设置 **`configure_render_cycles.num_samples`**（与 CLI 一致）。因此以 `generate.py` / `core.py` 跑出的数据默认**开启** Cycles 降噪，与仅读 gin 文件时的默认值不同。  
+- **`adaptive_threshold = 0.005`** 仍来自 gin；每像素采样数由上述 **`num_samples`** 控制：`generate.py` 对应参数为 **`--sample`**（默认 **128**；内部字段名 `render_samples`）。  
 - **输出分辨率**：`base.gin` 默认为 **1280×720**（`execute_tasks.generate_resolution` 与 `get_sensor_coords`）。`generate.py` 可用 **`--render 640`** 覆盖为 **640×360**（仍写入同一 gin 键）。  
 - **天空光**：`nishita_lighting.strength = 0.25`；`nishita_lighting.sun_elevation = ("clip_gaussian", 40, 25, 6, 70)`。
 
@@ -214,9 +215,22 @@ configs_indoor/
 
 ---
 
-## 8. 约束求解参数（gin）
+## 8. 约束求解参数（gin）与 `single.py` 实际阶段
 
-**当前入口所支持的全部房型**（`living_space` 与 `working_space` 共 10 类 `room-type`）在生成管线中**均会执行** `solve_steps_large`、`solve_steps_medium`、`solve_steps_small` 对应的家具求解阶段，**不按房型跳过**。程序化布局（教室、开放办公室、图书馆书架等）与求解器的分工见各分册；步数与开关以下列 gin 为准。
+Gin 中的 `compose_single_room.solve_steps_large` / `solve_steps_medium` / `solve_steps_small` 等仅在对应 **`solve_*` 阶段被调用**时生效。`infinigen_examples/single.py` 中的 `compose_single_room` 逻辑如下（与「是否跑程序化第一层」强相关）：
+
+| 路径 | `procedural_layout` 返回值 | `solve_large`（墙面 + 地面大件 greedy，用 `solve_steps_large`） | `solve_medium` / `solve_small` |
+|------|---------------------------|------------------------------------------------------------------|--------------------------------|
+| **住宅六类 + homestudio** | `False`（仅注入 AREA 顶光） | **执行** | **`solve_medium` 执行**；`solve_small` 由 `solve_small_enabled` 决定（`core.py` 常注入 `False`） |
+| **meeting-room** | `False`（仅注入 AREA 顶光） | **执行** | 同左 |
+| **open-office** | `True`（工位网格） | **执行**（第二层：墙柜 / 盆栽 / 灯 / 扶手椅等） | **不执行**（`solve_medium` / `solve_small` 整段在 `if not procedural_applied` 内） |
+| **classroom** / **library** | `True` | **不执行**（无第二层求解器家具） | **不执行**（同上） |
+
+**`procedural_score_refinement`（程序化得分精炼 / SA）**：以源码 `infinigen_examples/single.py` 为准。当 **`procedural_layout` 返回 `True`** 且 gin 中 **`procedural_score_refinement_steps > 0`** 时，在 **`solve_large` 之前**执行该阶段（开放办公在 `collision_refinement.refresh_state_trimesh` 之后）；**开放办公的第二层家具仅在此之后**才由 `solve_large` 写入。`configs_indoor/working_space.gin` 默认 **`procedural_score_refinement_steps = 320`**（步数为 0 时整段跳过）。教室与图书馆在该 SA 阶段可动物体常为空，往往近似无位移。
+
+因此：**并非**所有 10 种房型都会跑满三档 `solve_steps_*`。教室、图书馆、开放办公在 `procedural_layout` 之后**跳过** `solve_medium` 与 `solve_small`；教室与图书馆还**跳过** `solve_large`。开放办公是唯一「程序化后又跑 `solve_large`」的房型。细节见 [WORKING_SPACE_DESIGN.md](./WORKING_SPACE_DESIGN.md)。
+
+gin 中与 IDEAL 生成侧常用覆盖一致的示例：
 
 ```gin
 compose_single_room.solve_steps_large = 200
@@ -226,7 +240,7 @@ compose_single_room.terrain_enabled = False
 compose_single_room.solve_small_enabled = False
 ```
 
-与 `core.py` 一致时常设 **`solve_small_enabled=False`**（不解算桌面小物件）。
+与 `core.py` 一致时常注入 **`solve_small_enabled=False`**（不解算桌面小物件）。**注意**：`base_indoors.gin` 里 **`compose_indoors.solve_steps_*`** 也可能存在默认值；以实际加载顺序与 `--overrides` 为准。
 
 ---
 

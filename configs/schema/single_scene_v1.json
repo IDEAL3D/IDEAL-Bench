@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "idl3d:single_scene_v1",
-  "title": "IDL3D single scene (v1) — model inference output",
+  "$id": "ideal:single_scene_v1",
+  "title": "IDEAL single scene (v1) — model inference output",
   "description": "Root must contain only `scene`. Do not include `scene_id` (present in GT.json only). Room uses `size` for W,D,H; each object uses `dimensions` for its box (aligned with GT.json).",
   "type": "object",
   "required": ["scene"],
