@@ -62,14 +62,14 @@
 | 组件 | 依赖说明 |
 |------|----------|
 | `inference/infer.py` | 上述两种安装方式均包含 `google-genai`、`openai`。 |
-| `reconstruction/` | 需要 `bpy` 与 `mathutils`（全量依赖文件中已包含 `mathutils`；精简安装中单独列出）。默认 `--runner bpy`；亦可使用 `--runner blender` 并设置环境变量 **`BLENDER_EXECUTABLE`**。 |
+| `reconstruction/` | 需要 `bpy` 与 `mathutils`（全量依赖文件中已包含 `mathutils`；精简安装中单独列出）。渲染子进程固定为当前解释器 + `bpy_scripts/render.py`，不查找系统 `blender` 可执行文件。 |
 | `generation/`（含 `generate.py`、`preprocess.py` 及 `generate_lib/`、`preprocess_lib/`） | 仅适用于 **全量** `requirements.txt`；依赖 Infinigen 侧 Python 与科学计算相关包。 |
 
 ---
 
-## 重建阶段对 Blender 的调用方式
+## 重建阶段对 `bpy` 的调用方式
 
-重建默认使用 `--runner bpy`：通过当前 Python 环境中的 **`bpy`** 加载 `.blend` 并渲染，与 InfiniGen 侧常见用法一致。**不强制**安装带图形界面的 Blender 应用程序，也**不强制**将 `blender` 可执行文件加入 `PATH`。
+重建通过当前 Python 环境中的 **`bpy`**（`pip`/conda 安装的模块）加载 `.blend` 并渲染，与 InfiniGen 侧常见用法一致。**不**再提供独立 `blender` 可执行文件作为备选后端。
 
 ---
 
@@ -132,18 +132,21 @@ IDEAL/
 │   ├── generate.py               # 批量合成入口 → 子进程 generate_lib.core；写 manifests
 │   ├── preprocess.py               # 预处理 CLI → preprocess_lib.cli
 │   ├── generate_lib/
-│   │   ├── core.py               # Infinigen 子进程、coarse/render、四件套收尾
-│   │   ├── metadata_builder.py   # 从 scene.blend + Objects*.json 生成 metadata.json
-│   │   ├── blender_dump_metadata.py  # 仅在 Blender 内运行，导出相机片段 JSON
+│   │   ├── core.py               # Infinigen 子进程、coarse/render、五件套收尾
+│   │   ├── build_metadata.py     # 拼 metadata.json
+│   │   ├── extract_metadata.py   # Blender 内导出 render/environment 片段
+│   │   ├── extract_gt.py         # 写 GT.json（房间度量等）
 │   │   └── __init__.py
+│   ├── generation_common/        # 生成与预处理共用
+│   │   ├── scene_geometry.py     # AABB、地板/天花、射线、房高
+│   │   └── asset_rules.py        # 集合排除、collect_assets、相机/房间回退、scene_id
 │   └── preprocess_lib/
 │       ├── cli.py                # argparse 与 --final / 批处理等模式分发
 │       ├── core.py               # 批处理子进程循环、manifest、RAW→SCENES2TEST 同步
 │       ├── pipeline.py           # 单场景 bpy：GT.json、objects_in_view、npz 清理
 │       ├── defaults.py           # BPY 解释器路径等默认常量
-│       ├── extract_gt.py         # 写 GT.json（房间度量等）
 │       ├── extract_info.py       # objects_in_view.json；合并家具重叠摘要
-│       ├── extract_camview.py    # 实例分割可见性、镜内类别与几何辅助
+│       ├── extract_camview.py    # 实例分割 + metadata 对齐 → 镜内列表
 │       ├── overlap_check.py      # 家具两两重叠估计（由 extract_info 调用）
 │       └── __init__.py
 ├── inference/
@@ -160,9 +163,9 @@ IDEAL/
 │   ├── match.py                  # 按类别的预测与场景物体队列匹配
 │   ├── runtime.py                # 扫描预测文件、路径解析等运行时辅助
 │   ├── __init__.py
-│   └── blender_scripts/
+│   └── bpy_scripts/
 │       ├── .gitkeep
-│       └── render.py             # Blender：读 *_render.json，另存 .blend 并渲染 .png
+│       └── render.py             # bpy：读 *_render.json，另存 .blend 并渲染 .png
 ├── benchmarks/
 │   ├── evaluation/.gitkeep       # 预留：指标脚本
 │   ├── protocols/.gitkeep        # 预留：评测协议文稿
@@ -209,7 +212,7 @@ IDEAL/
 
 **入口**：`reconstruction/reconstruct.py`。
 
-**阶段顺序**：`compose.py`（内部通过 `match.py` 完成类别队列匹配；将预测几何写回并与 `GT.json` 合并）→ 在同目录生成 **`{model_id}_render.json`** → `blender_scripts/render.py` 读取该 JSON，另存 **`{model_id}.blend`** 并渲染 **`{model_id}.png`**。源场景 **`scene.blend`** 默认路径为 **`data/scenes2test/{scene_id}/scene.blend`**（不覆盖源文件）。
+**阶段顺序**：`compose.py`（内部通过 `match.py` 完成类别队列匹配；将预测几何写回并与 `GT.json` 合并）→ 在同目录生成 **`{model_id}_render.json`** → `bpy_scripts/render.py` 读取该 JSON，另存 **`{model_id}.blend`** 并渲染 **`{model_id}.png`**。源场景 **`scene.blend`** 默认路径为 **`data/scenes2test/{scene_id}/scene.blend`**（不覆盖源文件）。
 
 **批处理**（在仓库根 **`IDEAL/`** 下执行；按「场景 × 模型」顺序处理；任务总数会输出至标准错误流）：
 
@@ -233,13 +236,13 @@ python reconstruction/reconstruct.py --task-dir result/camera --dry-run
 
 相对路径首先相对于 **当前工作目录** 解析；若无法解析，则相对于 **仓库根 `IDEAL/`** 解析。
 
-**Blender 后端**：默认 `--runner bpy`；可通过环境变量 **`IDEAL_RECON_RUNNER`** 覆盖。渲染使用 **`scene.blend` 中当前活动相机** 及文件内渲染设置。
+**渲染后端**：固定为当前解释器的 **`bpy`**（运行 `render.py` 子进程前会检查 `import bpy`）。渲染使用 **`scene.blend` 中当前活动相机** 及文件内渲染设置。
 
 ### 重建相关模块职责
 
 - **`match.py`**：仅完成 **按类别的队列匹配**：基于 `info.objects` 建队，逐条与预测对应；冗余预测生成 `placeholder_*`；未占用的槽位几何置为 `null`。输出为预测与场景中物体的配对列表，**不写磁盘**。
 - **`compose.py`**：对配对结果执行 `apply_object_overlay`（写回预测几何），再经 `merge_gt_with_info_layer` 与完整 **`GT.json`** 合并，写出 **`{model_id}_render.json`**。
-- **`render.py`（Blender）**：依据 **`PREPROCESS_DESIGN.md`** 第 3 节将 JSON 写回场景对象（`protocol=floor` 时涉及 `position`、`dimensions`、`rotation_yaw` 等；空物体尺寸由子树网格世界包围盒估算）。**`protocol=camera`** 时不写回几何。
+- **`render.py`（`bpy`）**：依据 **`PREPROCESS_DESIGN.md`** 第 3 节将 JSON 写回场景对象（`protocol=floor` 时涉及 `position`、`dimensions`、`rotation_yaw` 等；空物体尺寸由子树网格世界包围盒估算）。**`protocol=camera`** 时不写回几何。
 
 ### API 密钥与本地配置（`[INTERNAL]api/`）
 

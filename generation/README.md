@@ -11,6 +11,6 @@
 
 - 路径：`INFINIGEN_SUBMODULE_ROOT`、`SCENES_*` 见 [`../configs/data_paths.py`](../configs/data_paths.py)；房型 canonical 见 [`../configs/constant.py`](../configs/constant.py)（`ROOM_TYPES`）。新场景目录名一般为 `{canonical}_s{seed}`。
 - **如何运行**（参数、tmux、manifests、`core.py` 细节）：[**`../[INTERNAL]QUICKSTART/generate.md`**](../[INTERNAL]QUICKSTART/generate.md)。
-- **生成侧模块关系**（`core` / `metadata_builder` 等）：[`generate_lib/README.md`](generate_lib/README.md)。
+- **生成侧模块关系**（`core` / `build_metadata` 等）：[`generate_lib/README.md`](generate_lib/README.md)。
 - `metadata.json` 字段约定：[`../docs/METADATA_SCHEMA.md`](../docs/METADATA_SCHEMA.md)。
 - 单房 box 局限：[`../docs/LIMITATION.md`](../docs/LIMITATION.md)。

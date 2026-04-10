@@ -1,13 +1,11 @@
 """
 Write ``GT.json`` from the currently opened Blender scene (single-room box pipeline).
 
-Enumerates top-level assets under ``unique_assets`` after excluding structure, doors, windows, etc.
+Used by **preprocess** (``preprocess_lib.pipeline``) and **generation finalize** (``core`` loads the
+scene with in-process ``bpy`` and calls ``write_gt_json``). The CLI below also works with any
+Python that has ``bpy`` and an already-open ``scene.blend``.
 
-- ``scene_id``: scene directory name (aligned with ``objects_in_view.json``).
-- ``position``: root object ``matrix_world.translation``.
-- ``dimensions``: merged subtree MESH AABB in **asset-root local space** as ``[dx,dy,dz]`` (``combined_aabb_root_local``); see repo docs (e.g. ``IDEAL/docs/geometric_rules_floor.md``).
-- ``rotation_yaw``: semantic forward vs. +Y, ``atan2(-fx,fy)`` in degrees; see ``semantic_yaw_degrees``. Category ``blackboard`` falls back to **root-local +Y** when Subpart.Front is missing (not default +X). Category ``side_table`` (``SideTableFactory`` default ``(w,w,h)`` square top) **forces 0** when horizontal ``dimensions`` are nearly square. Lamps (``lamp`` / ``*_lamp``) and potted plants with ``_plant_`` in the category name have **no stable semantic heading**; JSON stores **`null`** (eval should skip yaw).
-- ``resolve_room_metrics_box``: derives ``scene.room.size`` ``[W,D,H]`` from ``unique_assets:room_floor`` et al. (legacy ``room_geometry.py`` role).
+Object listing and room metrics use ``generation_common.asset_rules`` and ``generation_common.scene_geometry``.
 """
 
 from __future__ import annotations
@@ -46,16 +44,18 @@ if _REPO_ROOT not in sys.path:
 
 from configs.constant import ROOM_TYPES
 
-from preprocess_lib.extract_camview import (
+from generation_common.asset_rules import (
     collect_assets,
-    combined_aabb,
-    combined_aabb_root_local,
     factory_to_category,
     find_render_camera,
     identify_camera_room,
+    scene_id_from_output_dir,
+)
+from generation_common.scene_geometry import (
+    combined_aabb,
+    combined_aabb_root_local,
     is_floor,
     room_height,
-    scene_id_from_output_dir,
     world_aabb,
 )
 
@@ -326,3 +326,59 @@ def write_gt_json(blend_dir: str, room_metrics: Dict[str, Any]) -> str:
     n = len(payload["scene"]["objects"])
     print(f"[extract_gt] wrote {path} ({n} objects)")
     return path
+
+
+def write_gt_json_from_blend_path(scene_dir: str | os.PathLike[str], blend_path: str | os.PathLike[str]) -> str:
+    """Open ``blend_path`` with ``bpy``, resolve room metrics, write ``GT.json`` under ``scene_dir``.
+
+    ``scene_dir`` is the output folder (same directory that contains ``scene.blend`` in typical
+    layouts). Overwrites an existing ``GT.json``. Requires in-process ``bpy``.
+    """
+    scene_dir = os.path.normpath(os.path.abspath(os.fspath(scene_dir)))
+    blend_fp = os.path.normpath(os.path.abspath(os.fspath(blend_path)))
+    try:
+        import bpy  # type: ignore[import-not-found]
+    except ImportError as e:
+        raise RuntimeError(
+            "write_gt_json_from_blend_path requires a Python that can import bpy "
+            "(use the same conda env as Infinigen generation)."
+        ) from e
+    bpy.ops.wm.open_mainfile(filepath=blend_fp)
+    metrics = resolve_room_metrics_box()
+    if metrics is None:
+        raise RuntimeError("resolve_room_metrics_box returned None after opening blend")
+    return write_gt_json(scene_dir, metrics)
+
+
+def write_gt_json_for_loaded_scene(scene_dir: str | os.PathLike[str]) -> str:
+    """Like ``write_gt_json`` but assumes ``scene.blend`` is already open in the current ``bpy`` session."""
+    scene_dir = os.path.normpath(os.path.abspath(os.fspath(scene_dir)))
+    metrics = resolve_room_metrics_box()
+    if metrics is None:
+        raise RuntimeError("resolve_room_metrics_box returned None")
+    return write_gt_json(scene_dir, metrics)
+
+
+def _cli_main() -> None:
+    """CLI when ``scene.blend`` is already open: ``python extract_gt.py -- <scene_dir>`` (requires ``bpy``)."""
+    argv = sys.argv
+    if "--" in argv:
+        argv = argv[argv.index("--") + 1 :]
+    else:
+        argv = []
+    if len(argv) < 1:
+        print(
+            "Usage: python extract_gt.py -- <scene_dir>  (requires bpy; blend must already be open)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    scene_dir = os.path.normpath(os.path.abspath(argv[0]))
+    metrics = resolve_room_metrics_box()
+    if metrics is None:
+        print("[extract_gt] ERROR: resolve_room_metrics_box returned None", file=sys.stderr)
+        sys.exit(2)
+    write_gt_json(scene_dir, metrics)
+
+
+if __name__ == "__main__":
+    _cli_main()

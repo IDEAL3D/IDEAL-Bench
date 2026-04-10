@@ -1,14 +1,15 @@
 """
 Pairwise overlap estimate for top-level furniture under ``unique_assets``; ``extract_info`` merges the summary into ``objects_in_view.json`` (legacy pipeline used a standalone ``furniture_overlap.json`` or an ``info.json`` block).
 
-Uses asset enumeration and AABB from ``extract_camview``; invoked by ``extract_info`` as ``compute_furniture_overlap``.
+Uses asset enumeration from ``generation_common.asset_rules`` and AABB from ``generation_common.scene_geometry``; invoked by ``extract_info`` as ``compute_furniture_overlap``.
 """
 
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
-from .extract_camview import collect_assets, combined_aabb, factory_to_category
+from generation_common.asset_rules import collect_assets, factory_to_category
+from generation_common.scene_geometry import combined_aabb
 
 # Pairwise overlap: world-axis-aligned voxel grid; cap voxels per pair for runtime
 OVERLAP_MAX_VOXELS_PER_PAIR = 120_000

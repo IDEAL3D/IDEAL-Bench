@@ -1,11 +1,11 @@
 """
-Camera / room geometry / asset sets. **In-view sets derive from ``metadata.json`` ``object_index_map`` +
+**In-view (instance segmentation)**: derive visible objects from ``metadata.json`` ``object_index_map`` +
 ``instance_segmentation.png`` (uint16) pixel counts**, not ``bpy.object.pass_index``.
 
-``extract_gt`` and ``overlap_check`` share ``collect_assets``, ``factory_to_category``, and AABB helpers.
+Shared geometry / asset enumeration lives in ``generation_common`` (``scene_geometry``, ``asset_rules``).
 
-Debug: with ``generation`` on ``PYTHONPATH``, run ``blender -b scene.blend --python -c "..."`` calling
-``build_instance_seg_view_payload``.
+Debug: with ``generation`` on ``PYTHONPATH`` and a Python that has ``bpy``, ``open_mainfile`` then
+``python -c "..."`` calling ``build_instance_seg_view_payload``.
 """
 
 from __future__ import annotations
@@ -15,9 +15,7 @@ import json
 import os
 import re
 import sys
-from typing import Any, Dict, List, Optional, Tuple
-
-from .defaults import GT_JSON_NAME, INSTANCE_SEGMENTATION_PNG, METADATA_JSON
+from typing import Any, Dict, List
 
 _GENERATION_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _GENERATION_DIR not in sys.path:
@@ -26,6 +24,11 @@ if _GENERATION_DIR not in sys.path:
 _REPO_ROOT = os.path.dirname(_GENERATION_DIR)
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
+
+from generation_common.asset_rules import factory_to_category, scene_id_from_output_dir
+
+from .defaults import GT_JSON_NAME, INSTANCE_SEGMENTATION_PNG, METADATA_JSON
+
 from configs.constant import MIN_VISIBLE_PIXELS, canonicalize_asset_category
 
 
@@ -33,327 +36,6 @@ class MissingMetadataInstanceMapError(RuntimeError):
     """``metadata.json`` missing, or ``instance_map.object_index_map`` not a non-empty dict."""
 
     pass
-
-# Legacy preprocess/config.py: collection rules shared by GT / frustum (no bpy).
-ROOM_STRUCTURE_COLLECTIONS = frozenset(
-    {
-        "unique_assets:room_wall",
-        "unique_assets:room_floor",
-        "unique_assets:room_ceiling",
-        "unique_assets:room_exterior",
-        "unique_assets:staircases",
-    }
-)
-ASSET_GT_EXCLUDE_COLLECTIONS = ROOM_STRUCTURE_COLLECTIONS | frozenset(
-    {
-        "unique_assets:doors",
-        "unique_assets:windows",
-        "unique_assets:door_casings",
-        "skirting",
-    }
-)
-FULL_DELETE_COLLECTION_PREFIXES = (
-    "door_base_elements",
-)
-
-def scene_id_from_output_dir(dir_path: str) -> str:
-    """Basename of the scene folder containing ``scene.blend`` (e.g. ``kitchen_medium_s1759680675``)."""
-    return os.path.basename(os.path.normpath(os.path.abspath(dir_path)))
-
-
-KEEP_CATEGORIES = frozenset(
-    {
-        "chair",
-        "office_chair",
-        "bar_chair",
-        "sofa",
-        "table_dining",
-        "table_cocktail",
-        "simple_desk",
-        "table_top",
-        "large_shelf",
-        "cell_shelf",
-        "simple_bookcase",
-        "triangle_shelf",
-        "single_cabinet",
-        "cabinet",
-        "cabinet_drawer",
-        "kitchen_cabinet",
-        "kitchen_space",
-        "countertop",
-        "wall_shelf",
-        "bed",
-        "lamp",
-        "floor_lamp",
-        "desk_lamp",
-        "ceiling_light",
-        "ceiling_classic_lamp",
-        "tv",
-        "beverage_fridge",
-        "microwave",
-        "oven",
-        "dishwasher",
-        "toilet",
-        "sink",
-        "bathtub",
-        "rug",
-        "wall_art",
-        "plant_container",
-        "large_plant_container",
-        "aquarium_tank",
-        "range_hood",
-    }
-)
-
-
-# Legacy utils.py
-
-
-def in_blender() -> bool:
-    try:
-        import bpy  # noqa: F401
-
-        return True
-    except Exception:
-        return False
-
-
-def is_floor(obj) -> bool:
-    return getattr(obj, "type", None) == "MESH" and obj.name.endswith(".floor")
-
-
-def is_ceiling(obj) -> bool:
-    return getattr(obj, "type", None) == "MESH" and obj.name.endswith(".ceiling")
-
-
-def world_aabb(obj):
-    import bpy
-    import mathutils
-
-    dg = bpy.context.evaluated_depsgraph_get()
-    oe = obj.evaluated_get(dg)
-    me = oe.to_mesh()
-    if not me or not me.vertices:
-        oe.to_mesh_clear()
-        loc = oe.matrix_world.translation.copy()
-        return loc, loc.copy()
-
-    mw = oe.matrix_world
-    INF = float("inf")
-    lo = mathutils.Vector((INF, INF, INF))
-    hi = mathutils.Vector((-INF, -INF, -INF))
-    for v in me.vertices:
-        w = mw @ v.co
-        for i in range(3):
-            if w[i] < lo[i]:
-                lo[i] = w[i]
-            if w[i] > hi[i]:
-                hi[i] = w[i]
-    oe.to_mesh_clear()
-    return lo, hi
-
-
-def combined_aabb(objs):
-    import mathutils
-
-    INF = float("inf")
-    lo = mathutils.Vector((INF, INF, INF))
-    hi = mathutils.Vector((-INF, -INF, -INF))
-    valid = False
-    for o in objs:
-        if o.type != "MESH":
-            continue
-        try:
-            a, b = world_aabb(o)
-        except Exception:
-            continue
-        valid = True
-        for i in range(3):
-            if a[i] < lo[i]:
-                lo[i] = a[i]
-            if b[i] > hi[i]:
-                hi[i] = b[i]
-    if not valid:
-        z = objs[0].matrix_world.to_translation() if objs else mathutils.Vector()
-        return z.copy(), z.copy()
-    return lo, hi
-
-
-def combined_aabb_root_local(root, mesh_objs) -> Tuple[Any, Any]:
-    """
-    Transform each subtree MESH's **evaluated** vertices into **root local space**, then merge axis-aligned min/max.
-
-    Components of ``dimensions = hi - lo`` align with **root-local X/Y/Z**, matching root yaw and avoiding
-    world-axis AABB **padding** on tilted furniture. If ``matrix_world`` is singular, falls back to ``combined_aabb`` (world space).
-    """
-    import bpy
-    import mathutils
-
-    try:
-        inv = root.matrix_world.inverted()
-    except Exception:
-        return combined_aabb(mesh_objs)
-
-    dg = bpy.context.evaluated_depsgraph_get()
-    INF = float("inf")
-    lo = mathutils.Vector((INF, INF, INF))
-    hi = mathutils.Vector((-INF, -INF, -INF))
-    valid = False
-    for o in mesh_objs:
-        if o.type != "MESH":
-            continue
-        try:
-            oe = o.evaluated_get(dg)
-            me = oe.to_mesh()
-            if not me or not me.vertices:
-                oe.to_mesh_clear()
-                continue
-            mw = oe.matrix_world
-            for v in me.vertices:
-                pw = mw @ v.co
-                pl = inv @ pw
-                valid = True
-                for i in range(3):
-                    if pl[i] < lo[i]:
-                        lo[i] = pl[i]
-                    if pl[i] > hi[i]:
-                        hi[i] = pl[i]
-            oe.to_mesh_clear()
-        except Exception:
-            continue
-    if not valid:
-        z = mathutils.Vector((0.0, 0.0, 0.0))
-        return z.copy(), z.copy()
-    return lo, hi
-
-
-def raycast_floor(origin, max_depth: float = 100.0, eps: float = 1e-3):
-    import bpy
-    import mathutils
-
-    dg = bpy.context.evaluated_depsgraph_get()
-    d = mathutils.Vector((0, 0, -1))
-    cur = origin.copy()
-    rem = max_depth
-    while rem > 0:
-        hit, loc, *_, obj, _ = bpy.context.scene.ray_cast(dg, cur, d, distance=rem)
-        if not hit:
-            return None, None
-        if is_floor(obj):
-            return obj, loc
-        t = cur.z - loc.z
-        if t <= 0:
-            t = eps
-        rem -= t
-        cur = loc + d * eps
-    return None, None
-
-
-def room_height(room_id: str, floor_z_top: float) -> float:
-    import bpy
-
-    for o in bpy.data.objects:
-        if is_ceiling(o) and o.name.startswith(room_id + "."):
-            cmin, _ = world_aabb(o)
-            return round(cmin.z - floor_z_top, 4)
-    return 2.7
-
-
-def factory_to_category(obj_name: str) -> str:
-    m = re.match(r"^([A-Za-z]+?)Factory", obj_name)
-    if m:
-        camel = m.group(1)
-        cat = re.sub(r"(?<!^)(?=[A-Z])", "_", camel).lower()
-    else:
-        base = obj_name.split("(")[0].split(".")[0]
-        cat = re.sub(r"(?<!^)(?=[A-Z])", "_", base).lower() or "unknown"
-    return canonicalize_asset_category(cat)
-
-
-def extract_room_type(blend_path: str) -> str:
-    scene_dir = os.path.basename(os.path.dirname(os.path.dirname(blend_path)))
-    parts = scene_dir.split("_")
-    return parts[0] if parts else "unknown"
-
-
-# Legacy identify_room.py
-
-RENDER_CAMERA_NAME = "camera_0_0"
-
-
-def find_render_camera():
-    import bpy
-
-    obj = bpy.data.objects.get(RENDER_CAMERA_NAME)
-    if obj is None:
-        return None
-    if obj.type == "CAMERA":
-        return obj
-    for c in getattr(obj, "children", []):
-        if c.type == "CAMERA":
-            return c
-    return None
-
-
-def identify_camera_room() -> Optional[Dict[str, Any]]:
-    cam = find_render_camera()
-    if cam is None:
-        print("[extract_camview] ERROR: render camera not found.")
-        return None
-
-    cam_loc = cam.matrix_world.to_translation()
-    floor_obj, _ = raycast_floor(cam_loc)
-    if floor_obj is None:
-        print("[extract_camview] ERROR: no floor below camera.")
-        return None
-
-    rid = floor_obj.name.split(".")[0]
-    flo, fhi = world_aabb(floor_obj)
-    cx = 0.5 * (flo.x + fhi.x)
-    cy = 0.5 * (flo.y + fhi.y)
-    ztop = fhi.z
-    W = round(fhi.x - flo.x, 2)
-    D = round(fhi.y - flo.y, 2)
-    H = round(room_height(rid, ztop), 2)
-
-    print(f"[extract_camview] room={rid}  size=({W}, {D}, {H}) (ray-cast)")
-    return {
-        "cam_obj": cam,
-        "room_id": rid,
-        "floor_center": (cx, cy, ztop),
-        "floor_aabb": (flo, fhi),
-        "W": W,
-        "D": D,
-        "H": H,
-    }
-
-
-# Asset collection (same source as GT)
-
-
-def collect_assets() -> list:
-    """Top-level objects under ``unique_assets``, excluding structure/doors/windows/skirting collections (same set as GT)."""
-    import bpy
-
-    ua = bpy.data.collections.get("unique_assets")
-    if ua is None:
-        return []
-
-    skip_names: set = set()
-    for col_name in ASSET_GT_EXCLUDE_COLLECTIONS:
-        col = bpy.data.collections.get(col_name)
-        if col:
-            for o in col.all_objects:
-                skip_names.add(o.name)
-
-    for col in bpy.data.collections:
-        if any(col.name.startswith(p) for p in FULL_DELETE_COLLECTION_PREFIXES):
-            for o in col.all_objects:
-                skip_names.add(o.name)
-
-    return [
-        o for o in ua.all_objects if o.name not in skip_names and o.parent is None
-    ]
 
 
 def _load_instance_segmentation_u16(path: str):

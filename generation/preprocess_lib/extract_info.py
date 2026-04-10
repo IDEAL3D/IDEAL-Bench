@@ -14,7 +14,8 @@ from .defaults import (
     FURNITURE_OVERLAP_VOLUME_TOTAL_KEY,
     OBJECTS_IN_VIEW_JSON,
 )
-from .extract_camview import build_instance_seg_view_payload, scene_id_from_output_dir
+from .extract_camview import build_instance_seg_view_payload
+from generation_common.asset_rules import scene_id_from_output_dir
 from .overlap_check import compute_furniture_overlap
 
 

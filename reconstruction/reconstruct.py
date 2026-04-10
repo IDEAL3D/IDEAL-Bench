@@ -7,7 +7,7 @@ IDEAL 重建管线（完整流程）
 **每个任务按顺序执行**（上一步成功才进入下一步）：
 
 1. **compose.py**（内部调用 **match.py** 做类别队列配对）— 写回预测几何、合并 ``GT.json``，写出 ``{model_id}_render.json``（与预测同目录）。
-2. **blender_scripts/render.py** — 只读 ``{model_id}_render.json``，另存 ``{model_id}.blend``、渲染 ``{model_id}.png``；**不**改写 ``data/.../scene.blend``。
+2. **bpy_scripts/render.py** — 由当前解释器（需 ``import bpy``）执行：只读 ``{model_id}_render.json``，另存 ``{model_id}.blend``、渲染 ``{model_id}.png``；**不**改写 ``data/.../scene.blend``。
 
 布局::
 
@@ -23,19 +23,18 @@ IDEAL 重建管线（完整流程）
   python reconstruct.py --task-dir result/floor/bedroom_s1412833192 --model-id gpt-5.2-2025-12-11
   python reconstruct.py --prediction result/floor/.../model.json --dry-run
 
-  # 只跑 compose（仍会写出 _render.json），不跑 Blender 渲染
+  # 只跑 compose（仍会写出 _render.json），不跑 bpy 渲染步骤
   python reconstruct.py --scene-id ... --gemini --skip-render
 """
 
 from __future__ import annotations
 
 import argparse
-import os
 import subprocess
 import sys
 from pathlib import Path
 
-# 路径布局、任务发现、bpy / Blender 可执行文件（脚本直跑与 ``python -m`` 均可用）
+# 路径布局、任务发现、bpy 环境（脚本直跑与 ``python -m`` 均可用）
 try:
     from reconstruction import runtime as _rt
 except ImportError:
@@ -51,7 +50,7 @@ def _compose_script() -> Path:
 
 
 def _render_script() -> Path:
-    return Path(__file__).resolve().parent / "blender_scripts" / "render.py"
+    return Path(__file__).resolve().parent / "bpy_scripts" / "render.py"
 
 
 def resolve_gemini_prediction(project_dir: Path, protocol: str, scene_id: str) -> Path:
@@ -115,21 +114,6 @@ def parse_args() -> argparse.Namespace:
         "--skip-render",
         action="store_true",
         help="只运行 compose.py，不调用 render.py（仍会生成 _render.json；不生成 .blend / 渲染图）",
-    )
-    p.add_argument(
-        "--runner",
-        choices=("bpy", "blender"),
-        default=os.environ.get("IDEAL_RECON_RUNNER", "bpy"),
-        help=(
-            "render.py：bpy 用当前 Python（需 pip bpy）；"
-            "blender 用 blender --background --python（需可执行文件）。"
-            "也可用环境变量 IDEAL_RECON_RUNNER 覆盖默认值。"
-        ),
-    )
-    p.add_argument(
-        "--blender",
-        default=os.environ.get("BLENDER_EXECUTABLE", "blender"),
-        help="仅 --runner blender 时使用",
     )
     p.add_argument(
         "--dry-run",
@@ -242,10 +226,8 @@ def build_render_cmd(
     model_id: str,
     scene_id: str,
     prediction: Path,
-    *,
-    blender_exe: Path | None,
 ) -> list[str]:
-    """render.py 子进程参数列表（需先有 compose 写出的 {model_id}_render.json）。"""
+    """render.py 子进程参数列表：始终用 ``sys.executable``（需能 ``import bpy``）。"""
     blend = _rt.scene_blend_path(args.scenes_root, args.blend_root, scene_id)
     render_json = prediction.parent / f"{model_id}_render.json"
     out_png = prediction.parent / f"{model_id}.png"
@@ -258,10 +240,6 @@ def build_render_cmd(
         protocol,
         str(out_png.resolve()),
     ]
-
-    if args.runner == "blender":
-        exe = blender_exe if blender_exe is not None else Path(args.blender)
-        return [str(exe), "--background", "--python", str(render_py), "--"] + tail
     return [sys.executable, str(render_py), "--"] + tail
 
 
@@ -271,8 +249,6 @@ def run_one_task(
     mid: str,
     sid: str,
     pred: Path,
-    *,
-    blender_exe: Path | None,
 ) -> int:
     """顺序执行 compose → render；返回进程退出码（0 成功）。"""
     project_dir = _project_dir()
@@ -282,16 +258,7 @@ def run_one_task(
         print("[reconstruct] compose:", " ".join(compose_cmd))
         if not args.skip_render:
             try:
-                rc_cmd = build_render_cmd(
-                    args,
-                    proto,
-                    mid,
-                    sid,
-                    pred,
-                    blender_exe=blender_exe
-                    if args.runner == "blender"
-                    else None,
-                )
+                rc_cmd = build_render_cmd(args, proto, mid, sid, pred)
                 print("[reconstruct] render:", " ".join(rc_cmd))
             except FileNotFoundError as e:
                 print(f"[reconstruct] render 跳过（{e}）", file=sys.stderr)
@@ -306,18 +273,10 @@ def run_one_task(
         print(f"[reconstruct] 已跳过 render（--skip-render）: {sid} {mid}", file=sys.stderr)
         return 0
 
-    if args.runner == "bpy":
-        _rt.ensure_bpy_importable()
+    _rt.ensure_bpy_importable()
 
     try:
-        rc_cmd = build_render_cmd(
-            args,
-            proto,
-            mid,
-            sid,
-            pred,
-            blender_exe=blender_exe if args.runner == "blender" else None,
-        )
+        rc_cmd = build_render_cmd(args, proto, mid, sid, pred)
     except FileNotFoundError as e:
         print(f"[reconstruct] render 无法构造命令: {e}", file=sys.stderr)
         return 1
@@ -350,19 +309,8 @@ def main() -> int:
             file=sys.stderr,
         )
 
-    blender_exe: Path | None = None
-    if not args.dry_run and not args.skip_render and args.runner == "blender":
-        blender_exe = _rt.resolve_blender_executable(args.blender)
-
     for proto, mid, sid, pred in tasks:
-        code = run_one_task(
-            args,
-            proto,
-            mid,
-            sid,
-            pred,
-            blender_exe=blender_exe,
-        )
+        code = run_one_task(args, proto, mid, sid, pred)
         if code != 0:
             return code
 

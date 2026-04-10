@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """
-Backend for rectangular single-room scenes: runs ``infinigen_examples.single`` and, by default, keeps only
-blend, RGB beauty pass, uint16 instance map, and ``metadata.json`` per scene.
+Backend for rectangular single-room scenes: runs ``infinigen_examples.single`` and, by default, keeps
+blend, RGB beauty pass, uint16 instance map, ``metadata.json``, and ``GT.json`` per scene.
 Room types are canonical ids in ``configs.constant.ROOM_TYPES``; default output layout is
 ``data/scenes_raw/{type}_s{seed}/`` (override with ``--scenes-root`` / ``--output_folder``).
 For batch runs and RAW manifests, prefer ``generation/generate.py``; see ``../../[INTERNAL]QUICKSTART/generate.md`` and ``../../docs/LIMITATION.md``.
@@ -50,7 +50,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 _GEN_LIB_DIR = SCRIPT_DIR
 if str(_GEN_LIB_DIR) not in sys.path:
     sys.path.insert(0, str(_GEN_LIB_DIR))
-import metadata_builder  # noqa: E402
+import build_metadata  # noqa: E402
 
 # Default scene parent: IDEAL/data/scenes_raw (``configs.data_paths.SCENES_RAW_ROOT``).
 
@@ -229,8 +229,8 @@ def _tee_pipe_to_buffer_and_stream(pipe, buffer: list[str], stream) -> None:
             pass
 
 
-def _stderr_stdout_only_blender_unfreed_blocks(stderr: str | None, stdout: str | None) -> bool:
-    """True if Blender reported only shutdown 'Not freed memory blocks' noise (see Blender #96953)."""
+def _stderr_stdout_only_unfreed_blocks_noise(stderr: str | None, stdout: str | None) -> bool:
+    """True if subprocess output is only shutdown leak-detector 'Not freed memory blocks' noise."""
     text = f"{stdout or ''}\n{stderr or ''}"
     if "Not freed memory blocks" not in text:
         return False
@@ -255,7 +255,7 @@ def _run(cmd: list[str], gpu: str | None = None) -> None:
     """Run ``cmd`` as a subprocess with cwd at ``INFINIGEN_SUBMODULE_ROOT``.
 
     Stream stdout/stderr live (``coarse`` + ``render`` can take many minutes). After exit,
-    optionally treat Blender's shutdown ``Not freed memory blocks`` exit code 1 as success.
+    optionally treat bpy host shutdown ``Not freed memory blocks`` exit code 1 as success.
     """
     logger.info("[CMD] %s", " ".join(cmd))
     env = None
@@ -297,10 +297,10 @@ def _run(cmd: list[str], gpu: str | None = None) -> None:
     stderr_text = "".join(err_buf)
     if rc == 0:
         return
-    if rc == 1 and _stderr_stdout_only_blender_unfreed_blocks(stderr_text, stdout_text):
+    if rc == 1 and _stderr_stdout_only_unfreed_blocks_noise(stderr_text, stdout_text):
         logger.warning(
-            "Ignored subprocess exit code 1: Blender reported only unfreed memory blocks "
-            "at shutdown (benign leak-detector noise)."
+            "Ignored subprocess exit code 1: only 'Not freed memory blocks' at shutdown "
+            "(benign leak-detector noise from the bpy host process)."
         )
         return
     _tail = 200
@@ -317,8 +317,48 @@ def _run(cmd: list[str], gpu: str | None = None) -> None:
     raise subprocess.CalledProcessError(rc, cmd, stdout_text, stderr_text)
 
 
+def _write_gt_json_via_bpy(output_folder: Path) -> None:
+    """Write ``GT.json`` beside ``scene.blend`` using in-process ``bpy``.
+
+    Reuses or ``open_mainfile``-loads the scene, then ``extract_gt.resolve_room_metrics_box`` +
+    ``write_gt_json``. Requires a Python that can import ``bpy``.
+    """
+    output_folder = Path(output_folder).resolve()
+    blend_path = output_folder / "scene.blend"
+    resolved = os.path.normpath(str(blend_path.resolve()))
+
+    try:
+        import bpy  # type: ignore[import-not-found]  # noqa: WPS433
+    except ImportError as e:
+        raise RuntimeError(
+            "GT.json export requires bpy (use the same conda env / interpreter you use for generation "
+            "with bpy)."
+        ) from e
+
+    try:
+        cur = bpy.data.filepath
+        cur_abs = os.path.normpath(os.path.abspath(cur)) if cur else ""
+        if not cur_abs or cur_abs != resolved:
+            bpy.ops.wm.open_mainfile(filepath=resolved)
+        import extract_gt  # noqa: E402
+
+        metrics = extract_gt.resolve_room_metrics_box()
+        if metrics is None:
+            raise RuntimeError("resolve_room_metrics_box returned None")
+        extract_gt.write_gt_json(str(output_folder), metrics)
+        logger.info("GT.json: in-process bpy")
+    except Exception as e:
+        raise RuntimeError(f"GT.json in-process bpy export failed for {output_folder}") from e
+
+
 FINAL_KEEP_NAMES = frozenset(
-    {"scene.blend", "color.png", "instance_segmentation.png", "metadata.json"}
+    {
+        "scene.blend",
+        "color.png",
+        "instance_segmentation.png",
+        "metadata.json",
+        "GT.json",
+    }
 )
 
 
@@ -433,7 +473,7 @@ def _finalize_scene_outputs(
     *,
     clean_to_four: bool = True,
 ) -> None:
-    """After coarse+render: flat Object Index pass, metadata, optional prune to four deliverables.
+    """After coarse+render: flat Object Index pass, metadata, ``GT.json``, optional prune to five deliverables.
 
     If ``clean_to_four=False``, keep auxiliary files (useful when repairing legacy folders).
     """
@@ -471,7 +511,7 @@ def _finalize_scene_outputs(
     _write_instance_segmentation_png(seg_npy[0], output_folder / "instance_segmentation.png")
 
     scene_id = f"{canonical_room_type}_s{seed}"
-    metadata = metadata_builder.build_metadata(
+    metadata = build_metadata.build_metadata(
         scene_id,
         canonical_room_type,
         blend_path,
@@ -482,6 +522,15 @@ def _finalize_scene_outputs(
         encoding="utf-8",
     )
 
+    try:
+        _write_gt_json_via_bpy(output_folder)
+    except Exception as e:
+        logger.exception("GT.json export via bpy failed")
+        raise RuntimeError(
+            "GT.json export failed (in-process bpy only; fix bpy/GT errors above or use a Python "
+            "with bpy)."
+        ) from e
+
     if clean_to_four:
         _delete_all_except_final_four(output_folder)
         tmp_dir = output_folder.parent / "tmp"
@@ -490,7 +539,7 @@ def _finalize_scene_outputs(
 
 
 def _delete_all_except_final_four(output_folder: Path) -> None:
-    """Keep only scene.blend, color.png, instance_segmentation.png, metadata.json."""
+    """Keep only ``FINAL_KEEP_NAMES`` (scene.blend, passes, metadata, GT)."""
     output_folder = Path(output_folder)
     for p in list(output_folder.iterdir()):
         if p.name in FINAL_KEEP_NAMES:
@@ -753,7 +802,7 @@ def main() -> None:
         if "render" in args.task:
             _finalize_scene_outputs(output_folder, seed, canonical, args, gpu=args.gpu)
             print(
-                f"[OK] Scene saved: scene.blend, color.png, instance_segmentation.png, metadata.json -> {output_folder}"
+                f"[OK] Scene saved: scene.blend, color.png, instance_segmentation.png, metadata.json, GT.json -> {output_folder}"
             )
         else:
             logger.warning(

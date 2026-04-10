@@ -6,14 +6,15 @@
 
 | 文件 | 作用 |
 |------|------|
-| **`core.py`** | 解析 CLI → 调 `infinigen_examples.single`（coarse/render 等）；可选 GT 第二趟、写四件套（`scene.blend`、`color.png`、uint16 `instance_segmentation.png`、`metadata.json`）。档位 / 房型逻辑与 gin 覆盖集中在此。 |
-| **`metadata_builder.py`** | 从 `scene.blend` + Infinigen `Objects*.json` 拼 `metadata.json`；相机来自本机 `bpy` 或 **`blender_dump_metadata.py`** 子进程。 |
-| **`blender_dump_metadata.py`** | 仅在 Blender 内运行，写出相机片段 JSON。 |
-
+| **`core.py`** | 解析 CLI → 调 `infinigen_examples.single`（coarse/render 等）；Object Index 副产物、写五件套（`GT.json` 由当前解释器内 `bpy` 写出）。档位 / 房型逻辑与 gin 覆盖集中在此。 |
+| **`extract_gt.py`** | 在已打开的 `scene.blend` 里解析房间盒与资产列表，写 `GT.json`；预处理 `pipeline` import 使用；亦可用带 `bpy` 的解释器 **`python extract_gt.py -- <scene_dir>`** 作为 CLI。 |
+| **`build_metadata.py`** | 从 `scene.blend` + Infinigen `Objects*.json` 拼 `metadata.json`；相机来自当前解释器内 `bpy`（`open_mainfile`）。 |
+| **`extract_metadata.py`** | 在带 `bpy` 的解释器内运行，写出 render / environment 片段 JSON（与 `extract_gt.py` 并列）。 |
 ## 依赖
 
 - Infinigen 工作副本：`configs.data_paths.INFINIGEN_SUBMODULE_ROOT`（默认相对路径为仓库内子模块根目录）。
 - 房型与路径：同上，见仓库根 `configs/constant.py`、`configs/data_paths.py`。
+- **`extract_gt.py`** 使用 [`../generation_common/`](../generation_common/)（`scene_geometry`、`asset_rules`），与预处理共用。
 
 ## 注意事项
 

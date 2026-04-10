@@ -29,7 +29,7 @@ def run_pipeline(
     if generation_dir not in sys.path:
         sys.path.insert(0, generation_dir)
 
-    from .extract_gt import resolve_room_metrics_box, write_gt_json
+    from generate_lib.extract_gt import resolve_room_metrics_box, write_gt_json
     from .extract_info import write_info_json_v2
 
     result: Dict[str, Any] = {

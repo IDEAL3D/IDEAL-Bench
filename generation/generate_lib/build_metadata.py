@@ -2,8 +2,8 @@
 """
 Build the ``metadata.json`` payload dict from ``scene.blend`` and Infinigen ``Objects*.json``.
 
-Camera fields come only from an in-process ``bpy`` read or from ``blender_dump_metadata.py`` in a
-Blender subprocess. On failure, an error is raised; no placeholder camera data is written.
+Camera / render / environment fields come from in-process ``bpy`` (``open_mainfile`` + scene read).
+Metadata is read in-process via ``bpy`` only. On failure, an error is raised.
 """
 
 from __future__ import annotations
@@ -11,9 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import math
-import os
 import re
-import subprocess
 import sys
 from pathlib import Path
 
@@ -21,11 +19,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from configs.data_paths import INFINIGEN_SUBMODULE_ROOT  # noqa: E402
-
 logger = logging.getLogger(__name__)
-
-SCRIPT_DIR = Path(__file__).resolve().parent
 
 RENDER_ROTATION_UNIT = "radians"
 RENDER_ROTATION_ORDER = "XYZ"
@@ -88,42 +82,6 @@ def _object_index_map_from_objects_json(data: dict) -> dict[str, str]:
 def _filter_furniture_only(object_index_map: dict[str, str]) -> dict[str, str]:
     """Keep entries whose label contains ``factory`` (furniture); drop walls/floor/camera etc."""
     return {k: v for k, v in object_index_map.items() if "factory" in v.lower()}
-
-
-def _find_blender_executable() -> str:
-    override = os.environ.get("BLENDER")
-    if override and Path(override).is_file():
-        return override
-    import shutil
-
-    w = shutil.which("blender")
-    if w:
-        return w
-    ex = sys.executable or ""
-    if "blender" in ex.lower():
-        return ex
-    raise RuntimeError(
-        "Blender executable not found: add blender to PATH or set BLENDER=/path/to/blender"
-    )
-
-
-def _run_blender_dump_scene_metadata(blend_path: Path, out_json: Path, room_type: str) -> None:
-    dump_script = SCRIPT_DIR / "blender_dump_metadata.py"
-    if not dump_script.is_file():
-        raise FileNotFoundError(f"Missing {dump_script}")
-    blender = _find_blender_executable()
-    cmd = [
-        blender,
-        "-b",
-        str(blend_path),
-        "--python",
-        str(dump_script),
-        "--",
-        str(out_json),
-        room_type,
-    ]
-    logger.info("[CMD] %s", " ".join(cmd))
-    subprocess.run(cmd, check=True, cwd=str(INFINIGEN_SUBMODULE_ROOT))
 
 
 def _is_portal_light(light) -> bool:
@@ -281,54 +239,32 @@ def _render_environment_fragment_from_current_bpy(room_type: str) -> dict | None
         return None
 
 
-def _scene_fragment_from_bpy_open(blend_path: Path, room_type: str) -> dict | None:
+def resolve_scene_metadata(blend_path: Path, room_type: str) -> dict:
+    """Read render + environment from ``blend_path`` using in-process ``bpy`` only.
+
+    Raises ``RuntimeError`` if ``bpy`` is unavailable, the file cannot be opened, or the scene
+    has no readable active camera / environment data.
+    """
+    blend_path = Path(blend_path).resolve()
     try:
         import bpy  # type: ignore[import-not-found]
-    except ImportError:
-        return None
+    except ImportError as e:
+        raise RuntimeError(
+            "resolve_scene_metadata requires a Python that can import bpy "
+            "(use the same conda env / interpreter you use for generation with bpy)."
+        ) from e
     try:
         bpy.ops.wm.open_mainfile(filepath=str(blend_path))
-        return _render_environment_fragment_from_current_bpy(room_type)
     except Exception as e:
-        logger.warning("bpy failed to open scene.blend for scene metadata: %s", e)
-        return None
-
-
-def resolve_scene_metadata(blend_path: Path, room_type: str) -> dict:
-    """Read render + environment from ``blend_path``.
-
-    Tries in-process ``bpy`` first, then a Blender subprocess running ``blender_dump_metadata.py``.
-    Raises ``RuntimeError`` if both fail.
-    """
-    blend_path = Path(blend_path)
-    tmp_json = blend_path.parent / ".scene_metadata_fragment.json"
-
-    meta_bpy = _scene_fragment_from_bpy_open(blend_path, room_type)
-    if meta_bpy is not None:
-        logger.info("metadata (render+environment): in-process bpy")
-        return meta_bpy
-
-    err_sub: Exception | None = None
-    try:
-        _run_blender_dump_scene_metadata(blend_path, tmp_json, room_type)
-        raw = json.loads(tmp_json.read_text(encoding="utf-8"))
-        tmp_json.unlink(missing_ok=True)
-        render_base = raw["render"]
-        fragment = {
-            "render": _finalize_render_dict(render_base),
-            "environment": raw["environment"],
-        }
-        logger.info("metadata (render+environment): blender subprocess dump")
-        return fragment
-    except Exception as e:
-        err_sub = e
-        tmp_json.unlink(missing_ok=True)
-        logger.warning("blender subprocess scene metadata dump failed: %s", e)
-
-    raise RuntimeError(
-        f"Could not read scene metadata (bpy and subprocess both failed) for blend={blend_path}; "
-        f"subprocess error: {err_sub!r}"
-    )
+        raise RuntimeError(f"Could not open blend for scene metadata: {blend_path}") from e
+    fragment = _render_environment_fragment_from_current_bpy(room_type)
+    if fragment is None:
+        raise RuntimeError(
+            f"Could not read render/environment metadata from blend (no active camera or read error): "
+            f"{blend_path}"
+        )
+    logger.info("metadata (render+environment): in-process bpy")
+    return fragment
 
 
 def build_metadata(
@@ -350,7 +286,7 @@ def build_metadata(
 
 
 def build_metadata_from_loaded_bpy_scene(scene_id: str, canonical_room_type: str) -> dict:
-    """Build metadata dict from the **already loaded** Blender file (e.g. ``blender -b scene.blend --python ...``).
+    """Build metadata dict from the **already loaded** Blender file (``bpy`` session).
 
     Uses ``pass_index`` on objects (same convention as Infinigen ``Objects*.json``) and current scene camera /
     environment. Does not call ``open_mainfile``.
@@ -375,7 +311,7 @@ def build_metadata_from_blend_path(scene_id: str, canonical_room_type: str, blen
     except ImportError as e:
         raise RuntimeError(
             "build_metadata_from_blend_path requires a Python that can import bpy "
-            "(run inside Blender or use the batch script subprocess)."
+            "(use the same conda env / interpreter you use for generation with bpy)."
         ) from e
     bpy.ops.wm.open_mainfile(filepath=str(Path(blend_path).resolve()))
     return build_metadata_from_loaded_bpy_scene(scene_id, canonical_room_type)
