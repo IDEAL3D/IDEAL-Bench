@@ -1,0 +1,3 @@
+[submodule "infinigen-ideal"]
+	path = infinigen-ideal
+	url = https://github.com/cyn-xyz/infinigen-ideal

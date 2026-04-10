@@ -1,0 +1,11 @@
+# IDEAL — 默认全量依赖（推理 + 重建 + generation / Infinigen）
+# 在仓库根 IDEAL/ 执行: pip install -r requirements.txt
+# 建议 Python >= 3.10；请先 git submodule update --init（子模块检出目录默认为 infinigen-ideal/）
+#
+# 下列 -r 含 Infinigen 所需的 gin-config、opencv、trimesh、scipy 等全部包；
+# 其中可能有 git+ssh 可编辑依赖（infinigen_internal、robosuite 等），无权限时需按团队文档改源。
+-r infinigen-ideal/requirements.txt
+
+# 云端 VLM 推理（不在 Infinigen 锁文件中）
+google-genai>=1.0.0
+openai>=1.30.0

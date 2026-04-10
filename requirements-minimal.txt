@@ -1,0 +1,9 @@
+# IDEAL — 仅推理 + 重建（不运行 generation/、不导入 Infinigen Python）
+# 适用于：只跑 inference/ 与 reconstruction/，且已有现成 .blend / 无需本地合成场景。
+# 在仓库根 IDEAL/ 执行: pip install -r requirements-minimal.txt
+
+numpy>=1.26.0,<3
+bpy>=4.2.0,<5
+mathutils>=3.3.0,<4
+google-genai>=1.0.0
+openai>=1.30.0

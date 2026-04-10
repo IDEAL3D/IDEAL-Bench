@@ -1,0 +1,18 @@
+# data/: keep the directory in git (data/.gitkeep); ignore all generated content inside
+data/*
+!data/.gitkeep
+
+# result/: like data/ — only result/.gitkeep is tracked; ignore generated outputs
+result/*
+!result/.gitkeep
+
+# [INTERNAL]api/secrets/: like data/ — only .gitkeep is tracked; ignore keys etc.
+[INTERNAL]api/secrets/*
+![INTERNAL]api/secrets/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env

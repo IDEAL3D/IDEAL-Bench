@@ -1,0 +1,107 @@
+# IDEAL 内部快速上手
+
+## 环境配置
+
+```bash
+git clone --recurse-submodules https://github.com/[你的用户名]/IDEAL
+cd IDEAL
+```
+
+**完整安装**（场景生成 + 推理 + 重建）：
+```bash
+pip install -r requirements.txt
+```
+
+**精简安装**（仅推理 + 重建，不跑本地场景生成）：
+```bash
+pip install -r requirements-minimal.txt
+```
+
+> 需要 Linux x86_64，场景生成需要 NVIDIA GPU。
+
+---
+
+## 场景生成
+
+生成单种房型：
+```bash
+python generation/generate.py --room-type bedroom --num-scenes 10
+```
+
+批量生成多种房型：
+```bash
+python generation/generate.py --batch 'bedroom:100,living-room:100,classroom:50'
+```
+
+生成结果默认写入 `data/scenes_raw/`，manifest 记录在 `data/scenes_raw/manifests/`。
+
+---
+
+## 预处理
+
+对已生成的场景提取 GT 和可见物体信息：
+```bash
+python generation/preprocess.py
+```
+
+预处理会过滤掉有物体重叠的场景，输出 `GT.json` 和 `objects_in_view.json`，合格场景同步到 `data/scenes2test/`。
+
+---
+
+## 推理
+
+对单个场景跑推理：
+```bash
+python inference/infer.py \
+  --scene data/scenes2test/bedroom_s1234/ \
+  --protocol floor \
+  --model gemini-2.0-flash
+```
+
+批量跑所有场景：
+```bash
+python inference/infer.py --protocol floor
+```
+
+预测结果写入 `result/floor/{scene_id}/{model_id}.json`。
+
+API 密钥放在 `[INTERNAL]api/secrets/api_keys.csv`，格式：`provider, model, api_key, base_url`。
+
+---
+
+## 重建
+
+批量重建所有推理结果：
+```bash
+python reconstruction/reconstruct.py --protocol floor
+```
+
+单个场景：
+```bash
+python reconstruction/reconstruct.py \
+  --prediction result/floor/bedroom_s1234/gemini-2.0-flash.json
+```
+
+重建渲染图输出到 `result/floor/{scene_id}/{model_id}.png`。
+
+---
+
+## 评估
+
+```bash
+# 即将完成
+python benchmarks/evaluation/evaluate.py --protocol floor
+```
+
+---
+
+## 常见路径
+
+| 内容 | 路径 |
+|------|------|
+| 场景数据（测试用） | `data/scenes2test/` |
+| 推理结果 | `result/{protocol}/{scene_id}/{model_id}.json` |
+| 重建渲染图 | `result/{protocol}/{scene_id}/{model_id}.png` |
+| 系统提示词 | `inference/prompts/system_prompt_{protocol}.md` |
+| 路径配置 | `configs/data_paths.py` |
+| 几何约定 | `docs/geometric_rules_floor.md` |
