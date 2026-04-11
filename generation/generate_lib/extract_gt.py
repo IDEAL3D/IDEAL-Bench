@@ -204,7 +204,7 @@ def resolve_room_metrics_box() -> Optional[Dict[str, Any]]:
     Single-room box: prefer merged AABB from ``unique_assets:room_floor`` for W/D/H;
     else camera ray-cast to floor; else largest ``*.floor`` mesh.
 
-    Returned dict includes ``cam_obj`` (render camera). ``extract_info`` does not rely on camera fields when writing JSON.
+    Returned dict includes ``cam_obj`` (render camera). ``extract_inview`` does not rely on camera fields when writing JSON.
     """
     import bpy
 

@@ -30,7 +30,7 @@ def run_pipeline(
         sys.path.insert(0, generation_dir)
 
     from generate_lib.extract_gt import resolve_room_metrics_box, write_gt_json
-    from .extract_info import write_info_json_v2
+    from .extract_inview import write_info_json_v2
 
     result: Dict[str, Any] = {
         "ok": False,

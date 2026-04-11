@@ -1,12 +1,4 @@
-"""
-**In-view (instance segmentation)**: derive visible objects from ``metadata.json`` ``object_index_map`` +
-``instance_segmentation.png`` (uint16) pixel counts**, not ``bpy.object.pass_index``.
-
-Shared geometry / asset enumeration lives in ``generation_common`` (``scene_geometry``, ``asset_rules``).
-
-Debug: with ``generation`` on ``PYTHONPATH`` and a Python that has ``bpy``, ``open_mainfile`` then
-``python -c "..."`` calling ``build_instance_seg_view_payload``.
-"""
+"""Instance map + ``instance_segmentation.png`` → in-view object list (aligned with ``GT.json``)."""
 
 from __future__ import annotations
 
@@ -32,14 +24,11 @@ from .defaults import GT_JSON_NAME, INSTANCE_SEGMENTATION_PNG, METADATA_JSON
 from configs.constant import MIN_VISIBLE_PIXELS, canonicalize_asset_category
 
 
-class MissingMetadataInstanceMapError(RuntimeError):
-    """``metadata.json`` missing, or ``instance_map.object_index_map`` not a non-empty dict."""
-
-    pass
+class MissingInViewInfoError(RuntimeError):
+    """镜内语义链路缺文件或 metadata 不可用（GT / metadata / instance 图等）。"""
 
 
 def _load_instance_segmentation_u16(path: str):
-    """Load instance-segmentation PNG preserving integer samples (16-bit stays integral; no lossy 8-bit read)."""
     import numpy as np
 
     if not os.path.isfile(path):
@@ -86,24 +75,24 @@ def _load_instance_segmentation_u16(path: str):
 def _load_object_index_map(blend_dir: str) -> Dict[str, str]:
     path = os.path.join(blend_dir, METADATA_JSON)
     if not os.path.isfile(path):
-        raise MissingMetadataInstanceMapError(
+        raise MissingInViewInfoError(
             f"Missing {METADATA_JSON} (objects_in_view requires instance_map.object_index_map): {path}"
         )
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, json.JSONDecodeError) as e:
-        raise MissingMetadataInstanceMapError(
+        raise MissingInViewInfoError(
             f"Cannot parse {path}: {e}"
         ) from e
     inst = data.get("instance_map")
     if not isinstance(inst, dict):
-        raise MissingMetadataInstanceMapError(
+        raise MissingInViewInfoError(
             f"{path}: missing or invalid instance_map (expected object)"
         )
     oim = inst.get("object_index_map")
     if not isinstance(oim, dict) or len(oim) == 0:
-        raise MissingMetadataInstanceMapError(
+        raise MissingInViewInfoError(
             f"{path}: instance_map.object_index_map must be a non-empty dict; got {oim!r}"
         )
     return {str(k): str(v) for k, v in oim.items()}
@@ -123,7 +112,7 @@ def _metadata_label_to_base(label: str) -> str:
 def _build_metadata_base_to_gt_id(blend_dir: str) -> Dict[str, str]:
     path = os.path.join(blend_dir, GT_JSON_NAME)
     if not os.path.isfile(path):
-        raise FileNotFoundError(
+        raise MissingInViewInfoError(
             f"Missing {GT_JSON_NAME}; cannot align metadata object names to GT ids: {path}"
         )
     with open(path, encoding="utf-8") as f:
@@ -139,7 +128,7 @@ def _build_metadata_base_to_gt_id(blend_dir: str) -> Dict[str, str]:
         b = _gt_id_to_metadata_base(gid)
         if b in base_to_id and base_to_id[b] != gid:
             print(
-                f"[extract_camview] WARN: metadata base collision {b!r} -> "
+                f"[build_inview] WARN: metadata base collision {b!r} -> "
                 f"keeping {base_to_id[b]!r}, ignoring {gid!r}"
             )
         elif b not in base_to_id:
@@ -164,16 +153,15 @@ def _object_index_counts_from_png(seg_path: str) -> Dict[int, int]:
 def _objects_from_gt_for_names(
     blend_dir: str, root_names_in_order: List[str]
 ) -> List[Dict[str, Any]]:
-    """Copy object rows from ``GT.json`` whose ``id`` matches ``root_names_in_order``."""
     path = os.path.join(blend_dir, GT_JSON_NAME)
     if not os.path.isfile(path):
-        print(f"[extract_camview] WARN: missing {GT_JSON_NAME}, objects=[]")
+        print(f"[build_inview] WARN: missing {GT_JSON_NAME}, objects=[]")
         return []
     try:
         with open(path, encoding="utf-8") as f:
             gt_data = json.load(f)
     except (OSError, json.JSONDecodeError) as e:
-        print(f"[extract_camview] WARN: could not read GT: {e}")
+        print(f"[build_inview] WARN: could not read GT: {e}")
         return []
     objs = gt_data.get("scene", {}).get("objects")
     if not isinstance(objs, list):
@@ -186,21 +174,17 @@ def _objects_from_gt_for_names(
     for key in root_names_in_order:
         row = id_to_row.get(key)
         if row is None:
-            print(f"[extract_camview] WARN: in-view root {key!r} has no GT id, skipped")
+            print(f"[build_inview] WARN: in-view root {key!r} has no GT id, skipped")
             continue
         out.append(copy.deepcopy(row))
     return out
 
 
 def build_instance_seg_view_payload(scene_id: str, blend_dir: str) -> Dict[str, Any]:
-    """
-    From ``metadata.json`` ``object_index_map`` and integer / uint16 ``instance_segmentation.png``,
-    count pixels per pass index; entries with ``>= MIN_VISIBLE_PIXELS``, resolvable map keys, and metadata names
-    aligned to ``GT.json`` ids are in-view (in-frustum pixels ∩ global instance table ∩ valid GT objects). Does not use ``bpy.object.pass_index``.
-    """
+    """Build the same structure written to ``objects_in_view.json`` (categories + objects). Empty lists ⇒ no qualified in-view assets."""
     seg_path = os.path.join(blend_dir, INSTANCE_SEGMENTATION_PNG)
     if not os.path.isfile(seg_path):
-        raise FileNotFoundError(
+        raise MissingInViewInfoError(
             f"Missing {INSTANCE_SEGMENTATION_PNG}; cannot build objects_in_view: {seg_path}"
         )
 
@@ -216,7 +200,7 @@ def build_instance_seg_view_payload(scene_id: str, blend_dir: str) -> Dict[str, 
         meta_name = object_index_map.get(key)
         if meta_name is None:
             print(
-                f"[extract_camview] WARN: pass_index {pi} ({pc}px) not in "
+                f"[build_inview] WARN: pass_index {pi} ({pc}px) not in "
                 f"object_index_map, skipping"
             )
             continue
@@ -224,7 +208,7 @@ def build_instance_seg_view_payload(scene_id: str, blend_dir: str) -> Dict[str, 
         gid = base_to_gt.get(mb)
         if gid is None:
             print(
-                f"[extract_camview] WARN: metadata object {meta_name!r} "
+                f"[build_inview] WARN: metadata object {meta_name!r} "
                 f"(base {mb!r}) has no matching GT id, skipping"
             )
             continue
@@ -241,7 +225,7 @@ def build_instance_seg_view_payload(scene_id: str, blend_dir: str) -> Dict[str, 
     )
 
     print(
-        f"[extract_camview] metadata + instance seg: {len(names_ordered)} GT objects in-view "
+        f"[build_inview] metadata + instance seg: {len(names_ordered)} GT objects in-view "
         f"(≥{MIN_VISIBLE_PIXELS}px, GT-aligned), "
         f"{len(categories)} categories"
     )

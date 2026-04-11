@@ -1,5 +1,5 @@
 """
-Build and write ``objects_in_view.json`` (including furniture overlap summary fields); does not emit a standalone ``furniture_overlap.json``.
+Build and write ``objects_in_view.json`` (in-view list + furniture overlap summary); removes legacy ``furniture_overlap.json`` if present.
 """
 
 from __future__ import annotations
@@ -14,9 +14,9 @@ from .defaults import (
     FURNITURE_OVERLAP_VOLUME_TOTAL_KEY,
     OBJECTS_IN_VIEW_JSON,
 )
-from .extract_camview import build_instance_seg_view_payload
+from .build_inview import build_instance_seg_view_payload
 from generation_common.asset_rules import scene_id_from_output_dir
-from .overlap_check import compute_furniture_overlap
+from .check_overlap import compute_furniture_overlap
 
 
 def build_objects_in_view_only_payload(*, scene_id: str, blend_dir: str) -> Dict[str, Any]:
@@ -58,7 +58,7 @@ def write_info_json_v2(blend_dir: str) -> Tuple[str, Optional[int]]:
         pass
 
     print(
-        f"[extract_info] wrote {path_ovie}: categories_in_view_count="
+        f"[extract_inview] wrote {path_ovie}: categories_in_view_count="
         f"{payload.get('categories_in_view_count', '?')}, "
         f"objects_in_view_count={payload.get('objects_in_view_count', '?')}, "
         f"len(objects)={len(payload.get('objects') or [])}, "

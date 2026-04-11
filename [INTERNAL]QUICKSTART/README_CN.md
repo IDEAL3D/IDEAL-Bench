@@ -147,7 +147,7 @@ IDEAL/
 │       ├── defaults.py           # BPY 解释器路径等默认常量
 │       ├── extract_info.py       # objects_in_view.json；合并家具重叠摘要
 │       ├── extract_camview.py    # 实例分割 + metadata 对齐 → 镜内列表
-│       ├── overlap_check.py      # 家具两两重叠估计（由 extract_info 调用）
+│       ├── check_overlap.py      # 家具两两重叠估计（由 extract_inview 调用）
 │       └── __init__.py
 ├── inference/
 │   ├── infer.py                  # VLM CLI；预测写入 result/{protocol}/{scene_id}/

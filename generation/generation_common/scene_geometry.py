@@ -1,7 +1,7 @@
 """
 World / merged / root-local AABB utilities, floor/ceiling predicates, raycast, room height.
 
-Runs with ``bpy``. Used by ``asset_rules``, ``generate_lib.extract_gt``, ``overlap_check``.
+Runs with ``bpy``. Used by ``asset_rules``, ``generate_lib.extract_gt``, ``check_overlap``.
 """
 
 from __future__ import annotations

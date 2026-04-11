@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from .defaults import (
     BPY_PYTHON,
     DEFAULT_LOG_FILENAME,
+    FILTER_INVALID_SUBDIR,
     FURNITURE_OVERLAP_JSON,
     FURNITURE_OVERLAP_PAIR_COUNT_KEY,
     FURNITURE_OVERLAP_VOLUME_TOTAL_KEY,
@@ -132,6 +133,7 @@ _PROCESSED_TOPLEVEL_SKIP_DIRS = frozenset(
     {
         "manifests",
         PROCESSED_REJECT_SUBDIR,
+        FILTER_INVALID_SUBDIR,
         "DEPRECATED",
         "0_DEPRECATED",
     }

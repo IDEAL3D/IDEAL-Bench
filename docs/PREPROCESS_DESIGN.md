@@ -26,12 +26,12 @@
 
 ## 快速判断：场景里有没有「可报告的」家具重叠？
 
-写出 **`objects_in_view.json`** 时，预处理会调用 `overlap_check.compute_furniture_overlap`（失败或未执行语义阶段时见下）。文件顶层提供摘要字段：
+写出 **`objects_in_view.json`** 时，预处理会调用 `check_overlap.compute_furniture_overlap`（失败或未执行语义阶段时见下）。文件顶层提供摘要字段：
 
 - **`furniture_overlap_pair_count`**：达到报告阈值的家具对数量（见下文 `min_reported_volume_m3`）。**`0`** 可能表示真无达到阈值的相交，也可能表示可参与检测的资产少于 2 个等（实现会仍标为已计算）。
 - **`furniture_overlap_volume_m3_total`**（若写入）：各对估计相交体积之和。
 
-**说明**：磁盘上的 JSON **不**包含 `overlap_check` 返回 dict 里的嵌套 `furniture_overlap` 块（无单独 `computed` 字段）。若整条语义管线被跳过（CLI **`--no-semantics`**），**不会**写出 `objects_in_view.json`，也就无从读上述字段。实现细节仅在 Blender 侧；算法表见下节。
+**说明**：磁盘上的 JSON **不**包含 `check_overlap` 返回 dict 里的嵌套 `furniture_overlap` 块（无单独 `computed` 字段）。若整条语义管线被跳过（CLI **`--no-semantics`**），**不会**写出 `objects_in_view.json`，也就无从读上述字段。实现细节仅在 Blender 侧；算法表见下节。
 
 ---
 
@@ -39,7 +39,7 @@
 
 与旧实现（依赖 Blender `pass_index` 等）不同，**镜内列表**由磁盘上渲染产物 + 标注共同决定：
 
-1. **`metadata.json`**：须存在且含 **`instance_map.object_index_map`**（`pass_index` 字符串 → 实例名）；缺失或为空映射会抛错（`MissingMetadataInstanceMapError`）。
+1. **`metadata.json`**：须存在且含 **`instance_map.object_index_map`**（`pass_index` 字符串 → 实例名）；缺失、无法解析或为空映射会抛错（`MissingInViewInfoError`）。缺 **`GT.json`** 或 **`instance_segmentation.png`** 时亦抛 `MissingInViewInfoError`（或底层读图仍可能 `FileNotFoundError` / `RuntimeError`）。
 2. **`instance_segmentation.png`**：按 **整型 / uint16** 读取（`imageio` / `cv2.IMREAD_UNCHANGED` 等），逐 id 统计像素数；**`≥ MIN_VISIBLE_PIXELS`**（`configs/constant.py`）的 id 视为在分割中「可见」。
 3. 用 **`object_index_map`** 将 id 换为 metadata 实例名，再与 **`GT.json`** 中物体 **`id`** 对齐；只对齐成功的条目进入 **`objects`**（并做类别 canonical，与 GT 一致）。
 4. **不**使用 `bpy.object.pass_index` 枚举镜内物体。
@@ -65,7 +65,7 @@
 
 ## `objects_in_view.json` 中的家具重叠（算法语义）
 
-由 `extract_info` 将 `compute_furniture_overlap` 的**摘要数字**写入顶层；重叠的**完整**结构（含 **`pairs`**、`method` 等）存在于函数返回的 dict 中，**未**完整序列化到 `objects_in_view.json`。返回 dict 各字段含义如下（与实现 `overlap_check.py` 一致；**`method`** 等处以代码为准）。
+由 `extract_inview` 将 `compute_furniture_overlap` 的**摘要数字**写入顶层；重叠的**完整**结构（含 **`pairs`**、`method` 等）存在于函数返回的 dict 中，**未**完整序列化到 `objects_in_view.json`。返回 dict 各字段含义如下（与实现 `check_overlap.py` 一致；**`method`** 等处以代码为准）。
 
 | 字段 | 含义 |
 |------|------|
@@ -79,7 +79,7 @@
 | **`pairs`** | 列表项含 `a` / `b`（物体 `id`）、`category_a` / `category_b`、`overlap_volume_m3`、`voxel_count`、`detection` 等（**仅内存/日志**）。 |
 | **`skipped_category_pairs`** | 算法中**不参与穿模判定**的类别对说明（如床 + 床垫视为一体）。 |
 
-算法主流程：**世界系 AABB 两两相交**（粗筛；与 `GT.json` 的**根局部** `dimensions` 定义不同）→ 候选对 **Blender Boolean（INTERSECT）** → 失败则 **体素** 与 **顶点–表面距离** 回退。详见 `overlap_check` 模块注释。
+算法主流程：**世界系 AABB 两两相交**（粗筛；与 `GT.json` 的**根局部** `dimensions` 定义不同）→ 候选对 **Blender Boolean（INTERSECT）** → 失败则 **体素** 与 **顶点–表面距离** 回退。详见 `check_overlap` 模块注释。
 
 ---
 

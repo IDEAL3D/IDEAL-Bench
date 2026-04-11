@@ -1,1 +1,1 @@
-"""Infinigen scene preprocessing: ``cli``, ``core``, ``pipeline``, ``extract_info``, ``extract_camview``, ``overlap_check``; shared scene helpers in ``generation_common``; GT in ``generate_lib.extract_gt``."""
+"""Infinigen scene preprocessing: ``cli``, ``core``, ``pipeline``, ``extract_inview``, ``build_inview``, ``check_overlap``; shared scene helpers in ``generation_common``; GT in ``generate_lib.extract_gt``."""

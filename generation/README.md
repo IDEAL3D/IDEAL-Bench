@@ -6,6 +6,7 @@
 |------|-----|------|
 | [`generate.py`](generate.py) | [`generate_lib/`](generate_lib/) | Infinigen **矩形单房间**：合成 + 渲染，收尾四文件 |
 | [`preprocess.py`](preprocess.py) | [`preprocess_lib/`](preprocess_lib/) | 对已有 `scene.blend` 产出 GT / `objects_in_view` 等 |
+| [`filter_scenes.py`](filter_scenes.py) | [`preprocess_lib/`](preprocess_lib/) | 阶段1：`build_inview` 与 `objects_in_view` 相同的镜内语义（空则拒）+ `check_overlap`；无效目录移到 `<scenes-root>/invalid/` |
 
 **依赖与约定**
 
@@ -14,3 +15,5 @@
 - **生成侧模块关系**（`core` / `build_metadata` 等）：[`generate_lib/README.md`](generate_lib/README.md)。
 - `metadata.json` 字段约定：[`../docs/METADATA_SCHEMA.md`](../docs/METADATA_SCHEMA.md)。
 - 单房 box 局限：[`../docs/LIMITATION.md`](../docs/LIMITATION.md)。
+- **`filter_scenes.py`**：先 instance 图判定，再调用 `check_overlap`（与 `preprocess` 相同思路：主进程不加载 `bpy`，重叠计算在 Blender Python 子进程里执行）。
+

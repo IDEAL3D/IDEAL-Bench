@@ -15,5 +15,10 @@ FURNITURE_OVERLAP_VOLUME_TOTAL_KEY = "furniture_overlap_volume_m3_total"
 FURNITURE_OVERLAP_JSON = "furniture_overlap.json"
 # Under INFINIGEN/SCENES_PROCESSED, sibling to accepted scenes: whole scene dirs moved here on overlap reject.
 PROCESSED_REJECT_SUBDIR = "rejected_furniture_overlap"
+# Under ``--scenes-root`` (e.g. data/scenes_raw): invalid scenes moved here by ``filter_scenes.py``.
+FILTER_INVALID_SUBDIR = "invalid"
+# ``filter_scenes.py`` append-only logs under ``--scenes-root``.
+FILTER_SCENES_REPORT_CSV = "filter_scenes_report.csv"
+FILTER_SCENES_BATCHES_JSONL = "filter_scenes_batches.jsonl"
 INSTANCE_SEGMENTATION_PNG = "instance_segmentation.png"
 METADATA_JSON = "metadata.json"

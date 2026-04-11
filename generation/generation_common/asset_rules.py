@@ -2,7 +2,7 @@
 Collection exclusions, ``unique_assets`` enumeration, categories, camera/room path helpers.
 
 Runs in Blender for ``collect_assets`` / ``find_render_camera`` / ``identify_camera_room``.
-Shared by GT, overlap checks, and (via re-exports) legacy ``extract_camview`` imports.
+Shared by GT, overlap checks, and ``build_inview`` (instance / metadata alignment).
 """
 
 from __future__ import annotations

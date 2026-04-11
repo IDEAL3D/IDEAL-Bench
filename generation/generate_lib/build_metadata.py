@@ -14,12 +14,53 @@ import math
 import re
 import sys
 from pathlib import Path
+from typing import Any
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 logger = logging.getLogger(__name__)
+
+
+def _round2(x: float) -> float:
+    """Quantize metadata floats to two decimals (``round``: IEEE 754 ties-to-even).
+
+    ``camera_location`` and ``camera_rotation_euler`` stay full precision; all other
+    floats emitted into ``metadata.json`` should pass through here.
+    """
+    return round(float(x), 2)
+
+
+def _quantize_json_floats(obj: Any) -> Any:
+    """Recursively round every float in dicts / lists (e.g. ``environment`` subtree)."""
+    if isinstance(obj, float):
+        return _round2(obj)
+    if isinstance(obj, list):
+        return [_quantize_json_floats(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _quantize_json_floats(v) for k, v in obj.items()}
+    return obj
+
+
+def _quantize_render_skip_camera_pose(render: dict) -> dict:
+    """Round all floats under ``render`` except ``camera_location`` / ``camera_rotation_euler``."""
+    skip = frozenset({"camera_location", "camera_rotation_euler"})
+    out: dict[str, Any] = {}
+    for k, v in render.items():
+        if k in skip:
+            out[k] = v
+        elif isinstance(v, float):
+            out[k] = _round2(v)
+        elif isinstance(v, list):
+            if k == "resolution":
+                out[k] = [int(x) for x in v]
+            else:
+                out[k] = [_quantize_json_floats(x) for x in v]
+        else:
+            out[k] = v
+    return out
+
 
 RENDER_ROTATION_UNIT = "radians"
 RENDER_ROTATION_ORDER = "XYZ"
@@ -39,12 +80,13 @@ def _attach_camera_derived_fields(render: dict) -> dict:
     out = dict(render)
     x, y, z = float(loc[0]), float(loc[1]), float(loc[2])
     out["camera_height"] = z
-    out["camera_distance_to_center"] = round(math.sqrt(x * x + y * y), 2)
+    out["camera_distance_to_center"] = math.sqrt(x * x + y * y)
     return out
 
 
 def _finalize_render_dict(render: dict) -> dict:
-    return _attach_camera_derived_fields(_attach_render_rotation_fields(render))
+    r = _attach_camera_derived_fields(_attach_render_rotation_fields(render))
+    return _quantize_render_skip_camera_pose(r)
 
 
 def build_instance_map_block(object_index_map: dict[str, str]) -> dict:
@@ -229,7 +271,7 @@ def _render_environment_fragment_from_current_bpy(room_type: str) -> dict | None
             "focal_length_mm": float(cam.data.lens),
             "sensor_width": float(cam.data.sensor_width),
         }
-        env = _collect_environment_bpy(room_type)
+        env = _quantize_json_floats(_collect_environment_bpy(room_type))
         return {
             "render": _finalize_render_dict(render_base),
             "environment": env,
