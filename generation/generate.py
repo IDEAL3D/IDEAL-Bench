@@ -15,7 +15,7 @@ This entry point always runs coarse+render with denoising; for single-stage runs
 
 Example (from ``IDEAL/generation``)::
 
-    python generate.py --room-type classroom --num-scenes 12 --gpu auto
+    python generate.py --room-types classroom bathroom --gpu auto
 
 Long-running jobs, tmux, manifests, and ``core.py`` notes: ``../[INTERNAL]QUICKSTART/generate.md``.
 """

@@ -1,4 +1,4 @@
-# IDEAL: A Synthetic Indoor Dataset for Evaluating and Analysing Layout
+# IDEAL: Indoor Dataset for Evaluating Analysis by 3D Layout Reasoning
 
 <p align="center">
   <a href="[PAPER_URL]">[📄 Paper]</a> &nbsp;|&nbsp;

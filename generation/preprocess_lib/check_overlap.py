@@ -598,6 +598,14 @@ def _filter_scenes_cli() -> int:
             if a is not None and b is not None:
                 overlap_pair_strings.append(f"{a}|{b}")
         payload["overlap_pair_strings"] = overlap_pair_strings
+        vol = fo.get("overlap_volume_m3_total")
+        if vol is not None:
+            try:
+                payload["overlap_volume_m3_total"] = float(vol)
+            except (TypeError, ValueError):
+                payload["overlap_volume_m3_total"] = None
+        else:
+            payload["overlap_volume_m3_total"] = None
     except Exception as e:
         payload["error"] = f"overlap:{type(e).__name__}:{e}"
         _overlap_cli_write_json(out_path, payload)

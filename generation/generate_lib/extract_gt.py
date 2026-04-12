@@ -22,14 +22,25 @@ ROOM_FLOOR_COLLECTION = "unique_assets:room_floor"
 BLACKBOARD_CATEGORY = "blackboard"
 # SideTableFactory (…/tables/dining_table.py) defaults dimensions=(w,w,h): square horizontal footprint, yaw indistinguishable at 90° steps.
 SIDE_TABLE_CATEGORY = "side_table"
+# CoffeeTableFactory assets have local +X aligned to long edge rather than short edge (semantic front).
+# A fixed +90° offset corrects the extracted yaw to match semantic front = short-edge normal.
+# Coffee table is centro-symmetric: GT=90 and GT=270 are treated as equivalent during evaluation.
+COFFEE_TABLE_CATEGORY = "coffee_table"
 
 
 def _rotation_yaw_not_applicable(category: str) -> bool:
-    """Lamps and plants: no meaningful semantic 'front' for yaw; GT uses JSON null."""
+    """Return True for categories where yaw is meaningless and should be recorded as null.
+
+    - Lamps: no meaningful semantic 'front'.
+    - Plants: rotationally symmetric or orientation irrelevant.
+    - Rugs: fully symmetric, orientation not meaningful.
+    """
     if category == "lamp" or category.endswith("_lamp"):
         return True
     # Token-boundary style: matches large_plant_container, flower_plant; not substring of e.g. "implant".
     if "_plant_" in f"_{category}_":
+        return True
+    if category == "rug":
         return True
     return False
 
@@ -149,7 +160,16 @@ def _semantic_forward_xy(root, category: Optional[str] = None) -> Tuple[float, f
 def semantic_yaw_degrees(root, category: Optional[str] = None) -> int:
     fx, fy = _semantic_forward_xy(root, category=category)
     deg = math.degrees(math.atan2(-fx, fy))
-    return int(round(deg)) % 360
+    result = int(round(deg)) % 360
+
+    # CoffeeTableFactory assets have local +X along the long edge rather than the short edge
+    # (semantic front). A fixed +90° offset realigns the extracted yaw so that it points along
+    # the short-edge normal, consistent with other furniture conventions.
+    # Coffee table is centro-symmetric, so GT=90 ↔ GT=270 are equivalent during evaluation.
+    if category == COFFEE_TABLE_CATEGORY:
+        result = (result + 90) % 360
+
+    return result
 
 
 def _near_square_xy(dim: List[float], *, rel_tol: float = 0.12, abs_tol: float = 0.05) -> bool:

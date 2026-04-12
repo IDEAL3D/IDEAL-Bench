@@ -71,8 +71,8 @@ def discover_scene_blend_paths(scenes_root: str) -> List[str]:
 
 def _run_overlap_subprocess(
     bpy_python: str, blend_path: str
-) -> Tuple[Optional[int], Optional[str], List[str]]:
-    """Returns ``(pair_count, error, overlap_pair_strings)`` from ``check_overlap`` subprocess JSON."""
+) -> Tuple[Optional[int], Optional[str], List[str], Optional[float]]:
+    """Returns ``(pair_count, error, overlap_pair_strings, overlap_volume_m3_total)`` from subprocess JSON."""
     fd, tmp_path = tempfile.mkstemp(suffix=".json", prefix="filter_overlap_")
     os.close(fd)
     try:
@@ -86,22 +86,29 @@ def _run_overlap_subprocess(
         ]
         r = subprocess.run(cmd, check=False, cwd=str(_GENERATION_DIR))
         if r.returncode != 0:
-            return None, f"subprocess_exit_{r.returncode}", []
+            return None, f"subprocess_exit_{r.returncode}", [], None
         with open(tmp_path, encoding="utf-8") as f:
             data: Dict[str, Any] = json.load(f)
         err = data.get("error")
         if err:
-            return None, str(err), []
+            return None, str(err), [], None
         pc = data.get("pair_count")
         if pc is None:
-            return None, "missing_pair_count", []
+            return None, "missing_pair_count", [], None
         raw_pairs = data.get("overlap_pair_strings")
         pair_strings: List[str] = []
         if isinstance(raw_pairs, list):
             pair_strings = [str(x) for x in raw_pairs]
-        return int(pc), None, pair_strings
+        vol_total: Optional[float] = None
+        raw_vol = data.get("overlap_volume_m3_total")
+        if raw_vol is not None:
+            try:
+                vol_total = float(raw_vol)
+            except (TypeError, ValueError):
+                vol_total = None
+        return int(pc), None, pair_strings, vol_total
     except (OSError, json.JSONDecodeError, ValueError) as e:
-        return None, str(e), []
+        return None, str(e), [], None
     finally:
         try:
             os.unlink(tmp_path)
@@ -116,7 +123,15 @@ def _append_filter_scenes_csv(scenes_root: str, rows: List[Dict[str, Any]]) -> N
         w = csv.writer(f)
         if write_header:
             w.writerow(
-                ["scene_id", "outcome", "empty", "ovlp", "overlap_pairs", "note"]
+                [
+                    "scene_id",
+                    "outcome",
+                    "empty",
+                    "ovlp",
+                    "overlap_pairs",
+                    "overlap_volume_m3_total",
+                    "note",
+                ]
             )
         for r in rows:
             w.writerow(
@@ -126,6 +141,7 @@ def _append_filter_scenes_csv(scenes_root: str, rows: List[Dict[str, Any]]) -> N
                     r["empty"],
                     r["ovlp"],
                     r["overlap_pairs"],
+                    r["overlap_volume_m3_total"],
                     r["note"],
                 ]
             )
@@ -224,6 +240,7 @@ Order: (1) same in-view payload as objects_in_view.json (build_inview); (2) chec
             "empty": "",
             "ovlp": "",
             "overlap_pairs": "",
+            "overlap_volume_m3_total": "",
             "note": "",
         }
 
@@ -266,7 +283,9 @@ Order: (1) same in-view payload as objects_in_view.json (build_inview); (2) chec
             f"categories={payload.get('categories_in_view')}"
         )
 
-        pair_count, ov_err, pair_strings = _run_overlap_subprocess(bpy_python, bp)
+        pair_count, ov_err, pair_strings, vol_total = _run_overlap_subprocess(
+            bpy_python, bp
+        )
         row["empty"] = "0"
         if ov_err is not None:
             print(f"[ERROR] overlap check failed: {ov_err}")
@@ -278,7 +297,12 @@ Order: (1) same in-view payload as objects_in_view.json (build_inview); (2) chec
 
         assert pair_count is not None
         row["ovlp"] = str(pair_count)
-        print(f"[overlap] pair_count={pair_count}")
+        if vol_total is not None:
+            row["overlap_volume_m3_total"] = f"{vol_total:.6f}"
+        print(
+            f"[overlap] pair_count={pair_count} "
+            f"overlap_volume_m3_total={row['overlap_volume_m3_total'] or '-'}"
+        )
         if pair_count > 0:
             print("[reject] furniture overlap")
             row["outcome"] = "invalid_overlap"
