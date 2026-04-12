@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
 """
-Stage-1 filter: ``build_inview.build_instance_seg_view_payload`` (same as ``objects_in_view`` in-view list);
-then ``check_overlap`` in a Blender subprocess. Invalid dirs → ``<scenes-root>/invalid/<scene_id>/``.
+Stage-1 scene filter: keep scenes with valid in-view semantics (``objects_in_view``-compatible) and no
+furniture mesh overlap.
+
+**CLI:** ``--scenes-root`` is required (no default). Discovery is **one level deep** only:
+``<scenes-root>/<scene_id>/scene.blend``. Point at a room-type batch folder for large corpora.
+
+**Pipeline:** (1) ``build_inview`` — reject on missing inputs / broken instance–metadata–GT chain;
+(2) reject empty in-view (``objects_in_view_count == 0``); (3) Blender ``check_overlap`` — reject
+on overlap. Failures move to ``<scenes-root>/invalid/<scene_id>/``; CSV/JSONL append under
+``scenes-root``. ``--dry-run`` skips overlap unless ``--check-overlap``; ``--workers`` parallelizes.
 """
 
 from __future__ import annotations
@@ -14,7 +22,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -27,7 +37,6 @@ _REPO_ROOT = _GENERATION_DIR.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from configs.data_paths import SCENES_RAW_ROOT
 from configs.gpu_select import resolve_cuda_visible_devices
 from preprocess_lib.core import _find_bpy_python
 from preprocess_lib.defaults import (
@@ -46,7 +55,11 @@ def _raw_skip_names() -> frozenset[str]:
 
 
 def discover_scene_blend_paths(scenes_root: str) -> List[str]:
-    """``<root>/<scene_id>/scene.blend``; skips ``invalid``, manifests, dot dirs."""
+    """``<root>/<scene_id>/scene.blend`` only (one level); or ``<root>/scene.blend`` if no subdir hits.
+
+    Skips ``invalid``, manifests, dot dirs. For nested layouts (e.g. ``root/cat/id/``), point
+    ``--scenes-root`` at the category folder so each run stays a manageable batch.
+    """
     out: List[str] = []
     root = os.path.abspath(os.path.expanduser(scenes_root))
     if not os.path.isdir(root):
@@ -153,6 +166,147 @@ def _append_filter_scenes_batch_jsonl(scenes_root: str, record: Dict[str, Any]) 
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
+def _trunc_field(s: str, max_len: int) -> str:
+    if len(s) <= max_len:
+        return s
+    return s[: max_len - 3] + "..."
+
+
+def _aggregate_stats_from_rows(rows: List[Dict[str, Any]]) -> Dict[str, int]:
+    s = {
+        "kept": 0,
+        "dry_run_inview_ok": 0,
+        "invalid_empty_view": 0,
+        "invalid_missing_inputs": 0,
+        "invalid_overlap": 0,
+        "errors": 0,
+    }
+    for r in rows:
+        o = r.get("outcome") or ""
+        if o == "kept":
+            s["kept"] += 1
+        elif o == "dry_run_inview_ok":
+            s["dry_run_inview_ok"] += 1
+        elif o == "invalid_empty_view":
+            s["invalid_empty_view"] += 1
+        elif o == "invalid_missing_inputs":
+            s["invalid_missing_inputs"] += 1
+        elif o == "invalid_overlap":
+            s["invalid_overlap"] += 1
+        elif o == "error":
+            s["errors"] += 1
+    return s
+
+
+def _filter_one_blend(
+    job_index: int,
+    total: int,
+    bp: str,
+    scenes_root: str,
+    run_overlap: bool,
+    bpy_python: str,
+    dry_run: bool,
+    print_lock: threading.Lock,
+) -> Tuple[int, Dict[str, Any]]:
+    """Returns ``(1-based index for sort order, csv row)``."""
+
+    def _plog(msg: str) -> None:
+        with print_lock:
+            print(msg)
+
+    scene_dir = os.path.dirname(os.path.abspath(bp))
+    scene_id = os.path.basename(scene_dir.rstrip(os.sep))
+    _plog(f"\n{'─' * 60}\n[{job_index}/{total}] {scene_id}\n{'─' * 60}")
+
+    row: Dict[str, Any] = {
+        "scene_id": scene_id,
+        "outcome": "",
+        "empty": "",
+        "ovlp": "",
+        "overlap_pairs": "",
+        "overlap_volume_m3_total": "",
+        "note": "",
+    }
+
+    try:
+        payload = build_instance_seg_view_payload(scene_id, scene_dir)
+    except MissingInViewInfoError as e:
+        _plog(f"[reject] in_view: {e}")
+        row["outcome"] = "invalid_missing_inputs"
+        row["empty"] = "0"
+        row["note"] = _trunc_field(str(e), 2000)
+        try:
+            _move_to_invalid(scene_dir, scenes_root, scene_id, dry_run=dry_run)
+        except OSError as ex:
+            _plog(f"[ERROR] move failed: {ex}")
+            row["outcome"] = "error"
+            row["note"] = _trunc_field(f"move failed: {ex}", 2000)
+        return job_index, row
+    except Exception as e:
+        _plog(f"[ERROR] in_view unexpected: {type(e).__name__}: {e}")
+        row["outcome"] = "error"
+        row["empty"] = "0"
+        row["note"] = _trunc_field(f"{type(e).__name__}: {e}", 2000)
+        return job_index, row
+
+    if int(payload.get("objects_in_view_count") or 0) == 0:
+        _plog("[reject] in_view: no qualified assets (empty objects_in_view semantics)")
+        row["outcome"] = "invalid_empty_view"
+        row["empty"] = "1"
+        row["note"] = "objects_in_view empty"
+        try:
+            _move_to_invalid(scene_dir, scenes_root, scene_id, dry_run=dry_run)
+        except OSError as ex:
+            _plog(f"[ERROR] move failed: {ex}")
+            row["outcome"] = "error"
+            row["note"] = _trunc_field(f"move failed: {ex}", 2000)
+        return job_index, row
+
+    _plog(
+        f"[ok] in_view: {payload.get('objects_in_view_count')} object(s), "
+        f"categories={payload.get('categories_in_view')}"
+    )
+
+    row["empty"] = "0"
+    if not run_overlap:
+        _plog("[dry-run] skip Blender overlap (pass --check-overlap for full dry-run)")
+        row["outcome"] = "dry_run_inview_ok"
+        row["note"] = "overlap_skipped_dry_run"
+        return job_index, row
+
+    pair_count, ov_err, pair_strings, vol_total = _run_overlap_subprocess(
+        bpy_python, bp
+    )
+    if ov_err is not None:
+        _plog(f"[ERROR] overlap check failed: {ov_err}")
+        row["outcome"] = "error"
+        row["note"] = _trunc_field(ov_err, 2000)
+        return job_index, row
+
+    assert pair_count is not None
+    row["ovlp"] = str(pair_count)
+    if vol_total is not None:
+        row["overlap_volume_m3_total"] = f"{vol_total:.6f}"
+    _plog(
+        f"[overlap] pair_count={pair_count} "
+        f"overlap_volume_m3_total={row['overlap_volume_m3_total'] or '-'}"
+    )
+    if pair_count > 0:
+        _plog("[reject] furniture overlap")
+        row["outcome"] = "invalid_overlap"
+        row["overlap_pairs"] = _trunc_field(";".join(pair_strings), 15000)
+        try:
+            _move_to_invalid(scene_dir, scenes_root, scene_id, dry_run=dry_run)
+        except OSError as ex:
+            _plog(f"[ERROR] move failed: {ex}")
+            row["outcome"] = "error"
+            row["note"] = _trunc_field(f"move failed: {ex}", 2000)
+    else:
+        _plog("[ok] no overlap")
+        row["outcome"] = "kept"
+    return job_index, row
+
+
 def _move_to_invalid(
     scene_dir: str,
     scenes_root: str,
@@ -175,6 +329,10 @@ def _move_to_invalid(
 def main() -> int:
     epilog = """
 Order: (1) same in-view payload as objects_in_view.json (build_inview); (2) check_overlap in a Blender subprocess.
+
+--dry-run skips Blender overlap by default (fast). Use --dry-run --check-overlap for a full check without moving.
+
+--workers runs multiple scenes in parallel (threads + one Blender subprocess each). Watch GPU/RAM if overlap is enabled.
 """.strip()
     p = argparse.ArgumentParser(
         description="Filter scenes: empty in-view semantics (vs objects_in_view) or furniture overlap.",
@@ -184,13 +342,18 @@ Order: (1) same in-view payload as objects_in_view.json (build_inview); (2) chec
     p.add_argument(
         "--scenes-root",
         type=str,
-        default=str(SCENES_RAW_ROOT.resolve()),
-        help=f"Parent of scene folders (default: {SCENES_RAW_ROOT})",
+        required=True,
+        help="Parent of scene folders (<root>/<scene_id>/scene.blend). Required.",
     )
     p.add_argument(
         "--dry-run",
         action="store_true",
-        help="Print actions without moving directories.",
+        help="Print actions without moving directories. Skips Blender overlap unless --check-overlap.",
+    )
+    p.add_argument(
+        "--check-overlap",
+        action="store_true",
+        help="With --dry-run, still run check_overlap in Blender (slow). Ignored when not --dry-run.",
     )
     p.add_argument(
         "--gpu",
@@ -198,7 +361,17 @@ Order: (1) same in-view payload as objects_in_view.json (build_inview); (2) chec
         default=None,
         help="CUDA_VISIBLE_DEVICES for Blender subprocess (same as preprocess).",
     )
+    p.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Parallel scene jobs (default: 1). Each overlap check spawns Blender; avoid OOM on GPU/RAM.",
+    )
     args = p.parse_args()
+    if args.workers < 1:
+        print("[ERROR] --workers must be >= 1", file=sys.stderr)
+        return 2
 
     scenes_root = os.path.abspath(os.path.expanduser(args.scenes_root))
     _cuda = resolve_cuda_visible_devices(args.gpu)
@@ -209,117 +382,55 @@ Order: (1) same in-view payload as objects_in_view.json (build_inview); (2) chec
         print(f"[WARN] No scene.blend under {scenes_root}")
         return 0
 
-    bpy_python = _find_bpy_python()
+    run_overlap = (not args.dry_run) or bool(args.check_overlap)
+    bpy_python = _find_bpy_python() if run_overlap else ""
     print(f"[filter_scenes] scenes_root={scenes_root}")
     print(f"[filter_scenes] CUDA_VISIBLE_DEVICES={_cuda}")
-    print(f"[filter_scenes] bpy python: {bpy_python}")
-    print(f"[filter_scenes] {len(blends)} scene(s)")
+    if run_overlap:
+        print(f"[filter_scenes] bpy python: {bpy_python}")
+    else:
+        print("[filter_scenes] Blender overlap skipped (dry-run; pass --check-overlap to run it)")
+    print(f"[filter_scenes] {len(blends)} scene(s), workers={args.workers}")
 
-    def _trunc_field(s: str, max_len: int) -> str:
-        if len(s) <= max_len:
-            return s
-        return s[: max_len - 3] + "..."
+    print_lock = threading.Lock()
+    indexed_rows: List[Tuple[int, Dict[str, Any]]] = []
+    total_n = len(blends)
 
-    rows: List[Dict[str, Any]] = []
-    stats = {
-        "kept": 0,
-        "invalid_empty_view": 0,
-        "invalid_missing_inputs": 0,
-        "invalid_overlap": 0,
-        "errors": 0,
-    }
+    if args.workers == 1:
+        for i, bp in enumerate(blends, 1):
+            _, row = _filter_one_blend(
+                i,
+                total_n,
+                bp,
+                scenes_root,
+                run_overlap,
+                bpy_python,
+                bool(args.dry_run),
+                print_lock,
+            )
+            indexed_rows.append((i, row))
+    else:
+        with ThreadPoolExecutor(max_workers=args.workers) as ex:
+            futs = {
+                ex.submit(
+                    _filter_one_blend,
+                    i,
+                    total_n,
+                    bp,
+                    scenes_root,
+                    run_overlap,
+                    bpy_python,
+                    bool(args.dry_run),
+                    print_lock,
+                ): i
+                for i, bp in enumerate(blends, 1)
+            }
+            for fut in as_completed(futs):
+                indexed_rows.append(fut.result())
 
-    for i, bp in enumerate(blends, 1):
-        scene_dir = os.path.dirname(os.path.abspath(bp))
-        scene_id = os.path.basename(scene_dir.rstrip(os.sep))
-        print(f"\n{'─' * 60}\n[{i}/{len(blends)}] {scene_id}\n{'─' * 60}")
-
-        row: Dict[str, Any] = {
-            "scene_id": scene_id,
-            "outcome": "",
-            "empty": "",
-            "ovlp": "",
-            "overlap_pairs": "",
-            "overlap_volume_m3_total": "",
-            "note": "",
-        }
-
-        try:
-            payload = build_instance_seg_view_payload(scene_id, scene_dir)
-        except MissingInViewInfoError as e:
-            print(f"[reject] in_view: {e}")
-            row["outcome"] = "invalid_missing_inputs"
-            row["empty"] = "0"
-            row["note"] = _trunc_field(str(e), 2000)
-            stats["invalid_missing_inputs"] += 1
-            try:
-                _move_to_invalid(scene_dir, scenes_root, scene_id, dry_run=bool(args.dry_run))
-            except OSError as ex:
-                print(f"[ERROR] move failed: {ex}")
-                stats["errors"] += 1
-                row["outcome"] = "error"
-                row["note"] = _trunc_field(f"move failed: {ex}", 2000)
-            rows.append(row)
-            continue
-
-        if int(payload.get("objects_in_view_count") or 0) == 0:
-            print("[reject] in_view: no qualified assets (empty objects_in_view semantics)")
-            row["outcome"] = "invalid_empty_view"
-            row["empty"] = "1"
-            row["note"] = "objects_in_view empty"
-            stats["invalid_empty_view"] += 1
-            try:
-                _move_to_invalid(scene_dir, scenes_root, scene_id, dry_run=bool(args.dry_run))
-            except OSError as ex:
-                print(f"[ERROR] move failed: {ex}")
-                stats["errors"] += 1
-                row["outcome"] = "error"
-                row["note"] = _trunc_field(f"move failed: {ex}", 2000)
-            rows.append(row)
-            continue
-
-        print(
-            f"[ok] in_view: {payload.get('objects_in_view_count')} object(s), "
-            f"categories={payload.get('categories_in_view')}"
-        )
-
-        pair_count, ov_err, pair_strings, vol_total = _run_overlap_subprocess(
-            bpy_python, bp
-        )
-        row["empty"] = "0"
-        if ov_err is not None:
-            print(f"[ERROR] overlap check failed: {ov_err}")
-            row["outcome"] = "error"
-            row["note"] = _trunc_field(ov_err, 2000)
-            stats["errors"] += 1
-            rows.append(row)
-            continue
-
-        assert pair_count is not None
-        row["ovlp"] = str(pair_count)
-        if vol_total is not None:
-            row["overlap_volume_m3_total"] = f"{vol_total:.6f}"
-        print(
-            f"[overlap] pair_count={pair_count} "
-            f"overlap_volume_m3_total={row['overlap_volume_m3_total'] or '-'}"
-        )
-        if pair_count > 0:
-            print("[reject] furniture overlap")
-            row["outcome"] = "invalid_overlap"
-            row["overlap_pairs"] = _trunc_field(";".join(pair_strings), 15000)
-            stats["invalid_overlap"] += 1
-            try:
-                _move_to_invalid(scene_dir, scenes_root, scene_id, dry_run=bool(args.dry_run))
-            except OSError as ex:
-                print(f"[ERROR] move failed: {ex}")
-                stats["errors"] += 1
-                row["outcome"] = "error"
-                row["note"] = _trunc_field(f"move failed: {ex}", 2000)
-        else:
-            print("[ok] no overlap")
-            row["outcome"] = "kept"
-            stats["kept"] += 1
-        rows.append(row)
+    indexed_rows.sort(key=lambda t: t[0])
+    rows = [r for _, r in indexed_rows]
+    stats = _aggregate_stats_from_rows(rows)
 
     _append_filter_scenes_csv(scenes_root, rows)
     first_sid = os.path.basename(os.path.dirname(os.path.abspath(blends[0])))
@@ -334,11 +445,14 @@ Order: (1) same in-view payload as objects_in_view.json (build_inview); (2) chec
         "all_ok": stats["errors"] == 0,
         "total_scenes": len(blends),
         "kept": stats["kept"],
+        "dry_run_inview_ok": stats["dry_run_inview_ok"],
         "invalid_empty_view": stats["invalid_empty_view"],
         "invalid_missing_inputs": stats["invalid_missing_inputs"],
         "invalid_overlap": stats["invalid_overlap"],
         "errors": stats["errors"],
         "dry_run": bool(args.dry_run),
+        "overlap_skipped": not run_overlap,
+        "workers": args.workers,
         "report_csv": FILTER_SCENES_REPORT_CSV,
         "batches_jsonl": FILTER_SCENES_BATCHES_JSONL,
     }
@@ -348,9 +462,11 @@ Order: (1) same in-view payload as objects_in_view.json (build_inview); (2) chec
         f"(append); batch -> {os.path.join(scenes_root, FILTER_SCENES_BATCHES_JSONL)} (append)"
     )
     print(
-        f"counts: kept={stats['kept']} invalid_empty={stats['invalid_empty_view']} "
+        f"counts: kept={stats['kept']} dry_run_inview_ok={stats['dry_run_inview_ok']} "
+        f"invalid_empty={stats['invalid_empty_view']} "
         f"invalid_missing={stats['invalid_missing_inputs']} invalid_overlap={stats['invalid_overlap']} "
-        f"errors={stats['errors']} dry_run={args.dry_run}"
+        f"errors={stats['errors']} dry_run={args.dry_run} overlap_skipped={not run_overlap} "
+        f"workers={args.workers}"
     )
     return 1 if stats["errors"] else 0
 
