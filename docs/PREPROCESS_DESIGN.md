@@ -1,37 +1,29 @@
 # 预处理设计（Box 单房）：`GT.json` 与 `objects_in_view.json`
 
-实现入口：`generation/preprocess.py` → `preprocess_lib/cli.py`（`argparse`、参数互斥/必填校验、`main` 分发到 `_run_final_mode` / `_run_single_blend` / `_run_batch_mode`）、`preprocess_lib/core.py`（批处理与正式管线）、`preprocess_lib/pipeline.py`（子进程内单场景）；产物由 `preprocess_lib/extract_gt.py` 写 **`GT.json`**，由 `preprocess_lib/extract_info.py`（`write_info_json_v2`）写 **`objects_in_view.json`**。镜内物体列表来自 `preprocess_lib/extract_camview.build_instance_seg_view_payload`。GT 字段形状见 `single_scene_schema.json`（若存在）。
+**当前代码布局（已无统一预处理 CLI）**：在 Blender 内由 **`generation/generate_lib/extract_gt.py`** 写 **`GT.json`**。**`objects_in_view.json`** 有两种常见产生方式：（1）**推荐两阶段**：**`generation/filter_scenes.py`**（阶段 1，场景级：镜内语义 + 重叠）后接 **`generation/inview.py`**（阶段 2，物体级：可见性 / 长宽比 / **`preprocess_lib.truncation_filter`** 截断），由 `inview.py` 重写该 JSON，并在 `scenes-root` 写 **`inview_batch.jsonl`**；（2）在 Blender 内调用 **`preprocess_lib/extract_inview.write_info_json_v2`**，合并镜内列表与**家具重叠摘要**字段——与（1）写出顶层字段**可能不完全一致**（`inview.py` 当前不写 `furniture_overlap_*`）。阶段 1 的镜内判定与 **`preprocess_lib/build_inview.build_instance_seg_view_payload`** 一致；阶段 2 的 F1/F2 使用 **`build_inview_with_filters`**。重叠检测子进程为 **`python -m preprocess_lib.check_overlap`**（阶段 1）。GT 字段形状见 `single_scene_schema.json`（若存在）。
 
 **不写 GLB 导出管线**。`GT.json` / `objects_in_view.json` 顶层仅保留 **`scene_id`**（与场景目录名一致）及数据本体；**无** `schema_version`、`coordinate_frame` / `coordinate_summary`、`geometric_rules_ref`。字段语义与历史版本（曾用世界轴 `dimensions`、曾写冗长 `coordinate_frame`）见 **`geometric_rules_floor.md`** 与下文；当前 **`objects[].dimensions` 为根局部合并 AABB**。
 
-**遗留文件名**：历史管线曾用 **`info.json`** 承载镜内信息；当前 canonical 为 **`objects_in_view.json`**（`preprocess_lib/defaults.OBJECTS_IN_VIEW_JSON`）。批处理统计仍可读旧名侧车（见 `core.py` 注释）。
+**遗留文件名**：历史管线曾用 **`info.json`** 承载镜内信息；当前 canonical 为 **`objects_in_view.json`**（`preprocess_lib/defaults.OBJECTS_IN_VIEW_JSON`）。
 
 **Blender 坐标系、矩阵含义、墙厚与地板挤出、资产原点习惯、在 Blender 中查看父子**等引擎侧内容见 Infinigen 仓库根 [**INFINIGEN_RULES.md**](../../INFINIGEN/INFINIGEN_RULES.md) **§七**。
 
 ---
 
-## 简要运行日志（`preprocess_last.log`）
+## 历史：`preprocess_last.log` 与批处理 CLI
 
-- **默认路径**：`INFINIGEN/SCENES2TEST/preprocess_last.log`（**追加**写入；与默认批处理根目录一致）。
-- **每跑一次**追加**一块**（由 `#` 分隔线包围）：单 `--blend` 为一块；整批 `--scenes-root` 由**父进程只写一块**（`Scenes total` 为目录数），子进程带 `--no-log` 避免每条场景再写一块 `Scenes total: 1`。
-  - **预处理批次 id**：本次运行随机十六进制串；
-  - **预处理时间**（UTC ISO）｜**总用时**（秒）；
-  - **预处理场景数量**｜**成功**｜**失败**｜**跳过**（已存在 `GT.json` 未再处理）｜；
-  - **发现资产有重叠的场景**：子项 `场景名（pair_count=…）`，无则 `无`；
-  - **发现有其他异常的场景**：失败场景及原因（如 `exit=1`、blend 路径），无则 `无`。
-- **参数**：`--log-file PATH`；`--no-log` 不写文件；`--force`（或别名 `--non-skip`）在已有 `GT.json` 时仍预处理。
-- **退出码**：任一子场景预处理失败时进程 **非 0**（仅跳过的不算失败）。
+旧版 **`generation/preprocess.py`** + **`preprocess_lib/cli.py`** 会在 **`INFINIGEN/SCENES2TEST/preprocess_last.log`** 等路径**追加**批处理摘要；该入口与相关 **`--final`** / manifest 批处理逻辑已移除。筛选与重叠统计请使用 **`filter_scenes.py`** 写出的 CSV / JSONL（见 `preprocess_lib/defaults` 中的文件名常量）。
 
 ---
 
 ## 快速判断：场景里有没有「可报告的」家具重叠？
 
-写出 **`objects_in_view.json`** 时，预处理会调用 `check_overlap.compute_furniture_overlap`（失败或未执行语义阶段时见下）。文件顶层提供摘要字段：
+写出 **`objects_in_view.json`** 时，`extract_inview.write_info_json_v2` 会调用 `check_overlap.compute_furniture_overlap`（失败或未执行语义阶段时见下）。文件顶层提供摘要字段：
 
 - **`furniture_overlap_pair_count`**：达到报告阈值的家具对数量（见下文 `min_reported_volume_m3`）。**`0`** 可能表示真无达到阈值的相交，也可能表示可参与检测的资产少于 2 个等（实现会仍标为已计算）。
 - **`furniture_overlap_volume_m3_total`**（若写入）：各对估计相交体积之和。
 
-**说明**：磁盘上的 JSON **不**包含 `check_overlap` 返回 dict 里的嵌套 `furniture_overlap` 块（无单独 `computed` 字段）。若整条语义管线被跳过（CLI **`--no-semantics`**），**不会**写出 `objects_in_view.json`，也就无从读上述字段。实现细节仅在 Blender 侧；算法表见下节。
+**说明**：磁盘上的 JSON **不**包含 `check_overlap` 返回 dict 里的嵌套 `furniture_overlap` 块（无单独 `computed` 字段）。若不调用 **`write_info_json_v2`**（或未跑重叠步骤），则无从读上述字段。实现细节仅在 Blender 侧；算法表见下节。
 
 ---
 
@@ -44,7 +36,7 @@
 3. 用 **`object_index_map`** 将 id 换为 metadata 实例名，再与 **`GT.json`** 中物体 **`id`** 对齐；只对齐成功的条目进入 **`objects`**（并做类别 canonical，与 GT 一致）。
 4. **不**使用 `bpy.object.pass_index` 枚举镜内物体。
 
-`preprocess_lib/extract_info.write_info_json_v2(blend_dir)` 仅接收场景目录路径；**不再**传入相机对象（镜内不依赖相机句柄）。
+`preprocess_lib/extract_inview.write_info_json_v2(blend_dir)` 仅接收场景目录路径；**不再**传入相机对象（镜内不依赖相机句柄）。
 
 ---
 
@@ -105,7 +97,7 @@
 ## 1. 写入哪些物体？
 
 - 集合 **`unique_assets`** 中、**父级为 `None` 的顶层物体**。
-- 排除位于下列 **collection** 内的一切物体名（墙、地、顶、外墙、楼梯、门窗、门套、踢脚线等），以及名称以 `door_base_elements` 为前缀的 collection。定义见 `preprocess_lib/extract_camview.py` 顶部的 `ASSET_GT_EXCLUDE_COLLECTIONS` 等。
+- 排除位于下列 **collection** 内的一切物体名（墙、地、顶、外墙、楼梯、门窗、门套、踢脚线等），以及名称以 `door_base_elements` 为前缀的 collection。定义见 `generation_common/asset_rules.py` 中的 `ASSET_GT_EXCLUDE_COLLECTIONS` 等。
 - 每个物体一条记录；**`id` = 该根物体在 Blender 中的唯一名称**（如 `OfficeChairFactory(…).spawn_asset(…)`）。
 
 ---
@@ -115,7 +107,7 @@
 | 字段 | 计算方式 |
 |------|----------|
 | `type` | 目录基名按 `_` 首段、`lower()`；若首段在 **`ROOM_TYPES`** 中则采用，否则 **`unknown`** 并 **`[WARN] unexpected room_type prefix …`**。空目录名则为 **`unknown`**（不打 WARN）。 |
-| `size` | `[W, D, H]`（米）。优先用 `unique_assets:room_floor` 内所有 `*.floor` **MESH** 的**合并世界 AABB**：`W/D` 为 XY 方向跨度，`H` 由同房间 `.ceiling` 与地板顶面 Z 通过 `room_height` 推算（见 `preprocess_lib/extract_gt.resolve_room_metrics_box`）。若不可用则回退射线或最大地板网格。 |
+| `size` | `[W, D, H]`（米）。优先用 `unique_assets:room_floor` 内所有 `*.floor` **MESH** 的**合并世界 AABB**：`W/D` 为 XY 方向跨度，`H` 由同房间 `.ceiling` 与地板顶面 Z 通过 `room_height` 推算（见 `generate_lib/extract_gt.resolve_room_metrics_box`）。若不可用则回退射线或最大地板网格。 |
 | `asset_count` | 等于本文件中 `objects` 数组长度。 |
 
 ---
@@ -133,7 +125,7 @@
 对**该根物体及其整条子树**：
 
 1. 取 **`[根] + children_recursive`** 中所有 **`type == "MESH"`** 的对象（含根自身若为 MESH）。
-2. 对各 MESH 的 **evaluated** 顶点先变到**世界坐标**，再左乘 **`inv(root.matrix_world)`** 得到**根物体局部坐标**，在根局部 XYZ 上合并 **min/max**（`preprocess_lib/extract_camview.combined_aabb_root_local`）。
+2. 对各 MESH 的 **evaluated** 顶点先变到**世界坐标**，再左乘 **`inv(root.matrix_world)`** 得到**根物体局部坐标**，在根局部 XYZ 上合并 **min/max**（`generation_common/scene_geometry.combined_aabb_root_local`）。
 3. **`dimensions = [hi.x - lo.x, hi.y - lo.y, hi.z - lo.z]`** 为沿**根局部 X/Y/Z** 的跨度；绕竖直轴斜放时不再用世界轴外接盒膨胀。
 
 **复合物体（如床 = 床架根 + 床垫子 MESH）**：并集仍在**根局部**下计算，与侧边栏「仅父物体网格」仍可能不一致，但轴向与根的 Transform 一致。
@@ -147,7 +139,7 @@
 
 ### `category`
 
-- 由根物体名解析：`preprocess_lib/extract_camview.factory_to_category`（如 `OfficeChairFactory…` → `office_chair`）。
+- 由根物体名解析：`generation_common/asset_rules.factory_to_category`（如 `OfficeChairFactory…` → `office_chair`）。
 
 ---
 
@@ -163,7 +155,7 @@
 
 - 场景单位为**米**。
 - 位置与 `dimensions` 分量一般 **四舍五入到 0.01 m**（两位小数）；`rotation_yaw` 为**整度**或 **`null`**（见上）。
-- 存在 **Modifier** 时，顶点级 AABB 与仅看 `bound_box` 可能略有差异；预处理对网格使用 **evaluated mesh** 算 AABB（见 `preprocess_lib/extract_camview.py`；算法见上文 §3）。
+- 存在 **Modifier** 时，顶点级 AABB 与仅看 `bound_box` 可能略有差异；`extract_gt` 对网格使用 **evaluated mesh** 算 AABB（见 `generate_lib/extract_gt.py` 与 `generation_common/scene_geometry.py`；算法见上文 §3）。
 
 ---
 

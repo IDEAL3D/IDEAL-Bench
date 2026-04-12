@@ -7,7 +7,7 @@ import json
 import os
 import re
 import sys
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 _GENERATION_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _GENERATION_DIR not in sys.path:
@@ -19,7 +19,12 @@ if _REPO_ROOT not in sys.path:
 
 from generation_common.asset_rules import factory_to_category, scene_id_from_output_dir
 
-from .defaults import GT_JSON_NAME, INSTANCE_SEGMENTATION_PNG, METADATA_JSON
+from .defaults import (
+    ASPECT_RATIO_MAX,
+    GT_JSON_NAME,
+    INSTANCE_SEGMENTATION_PNG,
+    METADATA_JSON,
+)
 
 from configs.constant import MIN_VISIBLE_PIXELS, canonicalize_asset_category
 
@@ -27,6 +32,10 @@ from configs.constant import MIN_VISIBLE_PIXELS, canonicalize_asset_category
 class MissingInViewInfoError(RuntimeError):
     """镜内语义链路缺文件或 metadata 不可用（GT / metadata / instance 图等）。"""
 
+
+# ---------------------------------------------------------------------------
+# Internal helpers — unchanged from original
+# ---------------------------------------------------------------------------
 
 def _load_instance_segmentation_u16(path: str):
     import numpy as np
@@ -180,6 +189,10 @@ def _objects_from_gt_for_names(
     return out
 
 
+# ---------------------------------------------------------------------------
+# Original public API — NOT modified; filter_scenes.py still calls this
+# ---------------------------------------------------------------------------
+
 def build_instance_seg_view_payload(scene_id: str, blend_dir: str) -> Dict[str, Any]:
     """Build the same structure written to ``objects_in_view.json`` (categories + objects). Empty lists ⇒ no qualified in-view assets."""
     seg_path = os.path.join(blend_dir, INSTANCE_SEGMENTATION_PNG)
@@ -238,6 +251,129 @@ def build_instance_seg_view_payload(scene_id: str, blend_dir: str) -> Dict[str, 
         "categories_in_view_count": len(categories),
         "objects_in_view_count": len(objects_out),
         "objects": objects_out,
+    }
+
+
+# ---------------------------------------------------------------------------
+# New: Filter 1 + Filter 2 with per-object diagnostics for inview.py
+# ---------------------------------------------------------------------------
+
+def _instance_map_bbox(arr, pass_index: int) -> Optional[Tuple[int, int, int, int]]:
+    """Return (x_min, x_max, y_min, y_max) of pixels matching pass_index, or None if empty."""
+    import numpy as np
+
+    mask = arr == pass_index
+    if not mask.any():
+        return None
+    rows = np.where(mask.any(axis=1))[0]
+    cols = np.where(mask.any(axis=0))[0]
+    return int(cols[0]), int(cols[-1]), int(rows[0]), int(rows[-1])
+
+
+def build_inview_with_filters(
+    scene_id: str,
+    blend_dir: str,
+) -> Dict[str, Any]:
+    """Filter 1 (visibility) + Filter 2 (aspect ratio) applied with per-object diagnostics.
+
+    Returns a dict with:
+      - ``kept_gt_ids``: set[str] — gt_ids surviving both F1 and F2
+      - ``pixel_counts``: dict[str, int] — gt_id → actual pixel count (for Filter 3)
+      - ``filter_1``: list of {gt_id, pixel_count} dicts for filtered objects
+      - ``filter_2``: list of {gt_id, aspect_ratio} dicts for filtered objects
+      - ``objects_inview_original``: int — count before any filter
+      - ``gt_id_to_obj``: dict[str, dict] — gt_id → GT object row (for final payload)
+      - ``kept_ids_ordered``: list[str] — ``kept_gt_ids`` sorted; input ordering for Filter 3 / final write
+    """
+    import numpy as np
+
+    seg_path = os.path.join(blend_dir, INSTANCE_SEGMENTATION_PNG)
+    if not os.path.isfile(seg_path):
+        raise MissingInViewInfoError(
+            f"Missing {INSTANCE_SEGMENTATION_PNG}; cannot build objects_in_view: {seg_path}"
+        )
+
+    object_index_map = _load_object_index_map(blend_dir)
+    base_to_gt = _build_metadata_base_to_gt_id(blend_dir)
+    arr = _load_instance_segmentation_u16(seg_path)
+    counts = _object_index_counts_from_png(seg_path)
+
+    # --- resolve pass_index → gt_id, pixel_count --------------------------
+    # gt_id → pixel_count for all objects with any pixels (pre-Filter-1)
+    gt_id_to_pixels: Dict[str, int] = {}
+    # gt_id → pass_index (needed for bbox lookup)
+    gt_id_to_pidx: Dict[str, int] = {}
+
+    for pi, pc in sorted(counts.items()):
+        key = str(int(pi))
+        meta_name = object_index_map.get(key)
+        if meta_name is None:
+            continue
+        mb = _metadata_label_to_base(meta_name)
+        gid = base_to_gt.get(mb)
+        if gid is None:
+            continue
+        # keep the larger pixel count if gid maps to multiple pass_indices
+        if gid not in gt_id_to_pixels or pc > gt_id_to_pixels[gid]:
+            gt_id_to_pixels[gid] = pc
+            gt_id_to_pidx[gid] = pi
+
+    # --- Filter 1: visibility (MIN_VISIBLE_PIXELS) ------------------------
+    filter_1_filtered: List[Dict[str, Any]] = []
+    after_f1: Dict[str, int] = {}  # gt_id → pixel_count
+
+    for gid, pc in gt_id_to_pixels.items():
+        if pc < MIN_VISIBLE_PIXELS:
+            filter_1_filtered.append({"gt_id": gid, "pixel_count": pc})
+        else:
+            after_f1[gid] = pc
+
+    objects_inview_original = len(gt_id_to_pixels)
+
+    # --- Filter 2: aspect ratio -------------------------------------------
+    filter_2_filtered: List[Dict[str, Any]] = []
+    after_f2: Set[str] = set()
+
+    for gid, pc in after_f1.items():
+        pidx = gt_id_to_pidx[gid]
+        bbox = _instance_map_bbox(arr, pidx)
+        if bbox is None:
+            # shouldn't happen since pc >= MIN_VISIBLE_PIXELS, but guard anyway
+            after_f2.add(gid)
+            continue
+        x_min, x_max, y_min, y_max = bbox
+        dx = max(x_max - x_min, 1)
+        dy = max(y_max - y_min, 1)
+        ratio = max(dx / dy, dy / dx)
+        if ratio > ASPECT_RATIO_MAX:
+            filter_2_filtered.append({"gt_id": gid, "aspect_ratio": round(ratio, 2)})
+        else:
+            after_f2.add(gid)
+
+    # --- load GT rows for kept objects ------------------------------------
+    kept_ids_ordered = sorted(after_f2)
+    objects_out = _objects_from_gt_for_names(blend_dir, kept_ids_ordered)
+    for o in objects_out:
+        c = o.get("category")
+        if c is not None:
+            o["category"] = canonicalize_asset_category(str(c))
+    gt_id_to_obj = {str(o["id"]): o for o in objects_out if o.get("id") is not None}
+
+    print(
+        f"[build_inview] F1+F2: original={objects_inview_original} "
+        f"f1_filtered={len(filter_1_filtered)} "
+        f"f2_filtered={len(filter_2_filtered)} "
+        f"remaining={len(after_f2)}"
+    )
+
+    return {
+        "objects_inview_original": objects_inview_original,
+        "kept_gt_ids": after_f2,
+        "pixel_counts": {gid: after_f1[gid] for gid in after_f2},
+        "filter_1": filter_1_filtered,
+        "filter_2": filter_2_filtered,
+        "gt_id_to_obj": gt_id_to_obj,
+        "kept_ids_ordered": kept_ids_ordered,
     }
 
 

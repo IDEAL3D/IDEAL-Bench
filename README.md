@@ -90,7 +90,7 @@ python benchmarks/evaluation/evaluate.py --protocol floor
 
 ```
 IDEAL/
-├── generation/          # Scene synthesis and preprocessing scripts
+├── generation/          # Scene synthesis, filtering, and related scripts
 ├── inference/           # VLM inference scripts and system prompts
 ├── reconstruction/      # Layout-to-Blender reconstruction scripts
 ├── benchmarks/          # Evaluation metrics and leaderboard (WIP)

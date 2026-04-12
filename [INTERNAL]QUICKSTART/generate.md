@@ -97,16 +97,16 @@ python generate.py ... --gpu 3 --start-seed <b>
 
 脚本内 **FIXED_WALL_THICKNESS_M**（`generate.py` 与 `core.py` 顶部常量）默认固定墙厚/地板挤出；设为 `None` 则沿用 Infinigen 随机墙厚。
 
-## GPU 与 CUDA（`generate.py` / `core.py` / `preprocess.py`）
+## GPU 与 CUDA（`generate.py` / `core.py` / `filter_scenes.py`）
 
-- **统一逻辑**在 `configs/gpu_select.py` 的 `resolve_cuda_visible_devices`：`generate.py`、`generate_lib/core.py`、`preprocess_lib/cli.py`（预处理入口）共用同一套优先级（`--gpu` → `IDEAL_GPU` → 已存在的 `CUDA_VISIBLE_DEVICES` → `auto` / 回退 `0`）。
-- **预处理**：`python preprocess.py ...` 支持 **`--gpu`**，会在进程开始时设置 `CUDA_VISIBLE_DEVICES`，batch 子进程继承同一选择，避免每场景重新挑卡。
+- **统一逻辑**在 `configs/gpu_select.py` 的 `resolve_cuda_visible_devices`：`generate.py`、`generate_lib/core.py`、`filter_scenes.py` 共用同一套优先级（`--gpu` → `IDEAL_GPU` → 已存在的 `CUDA_VISIBLE_DEVICES` → `auto` / 回退 `0`）。
+- **筛选**：`python filter_scenes.py ...` 支持 **`--gpu`**，会在进程开始时设置 `CUDA_VISIBLE_DEVICES`；各场景的 Blender 重叠子进程继承该环境。
 - **仅打印/导出环境变量**（不跑生成）：仓库根执行  
   `python '[INTERNAL]tools/gpu_selecting.py'`  
   或 `eval $(python '[INTERNAL]tools/gpu_selecting.py' --export)`。
 
-对外发布若希望**完全交给用户环境**、不在代码里改 `CUDA_VISIBLE_DEVICES`，解耦成本较低：逻辑集中在 **`configs/gpu_select.py`** 与上述三处调用；上线前可改为「不调用 `resolve_*`、不注入 `CUDA_VISIBLE_DEVICES`」，仅保留用户 shell / 调度系统里已设置的变量（并同步删掉或绕开 `generate_lib/core.py` 里 `_run` 对 `env["CUDA_VISIBLE_DEVICES"]` 的赋值）。**`[INTERNAL]tools/gpu_selecting.py`** 可作为可选工具保留或删除。
+对外发布若希望**完全交给用户环境**、不在代码里改 `CUDA_VISIBLE_DEVICES`，解耦成本较低：逻辑集中在 **`configs/gpu_select.py`** 与上述各入口；上线前可改为「不调用 `resolve_*`、不注入 `CUDA_VISIBLE_DEVICES`」，仅保留用户 shell / 调度系统里已设置的变量（并同步删掉或绕开 `generate_lib/core.py` 里 `_run` 对 `env["CUDA_VISIBLE_DEVICES"]` 的赋值）。**`[INTERNAL]tools/gpu_selecting.py`** 可作为可选工具保留或删除。
 
-## 与预处理的关系
+## 与真值 / 筛选的关系
 
-预处理入口为 `generation/preprocess.py`，工作目录为 `SCENES_PROCESSED` 等；不由 `generate.py` 直接写入。预处理与生成共用上一节的 GPU 解析规则（`--gpu` / `IDEAL_GPU` / `auto` 等）。
+`generate.py` 在收尾阶段写出 **`GT.json`** 等；对批目录做镜内语义与家具重叠筛选时使用 **`filter_scenes.py`**（见 `generation/README.md`、`docs/PREPROCESS_DESIGN.md`）。二者与上一节共用 GPU 解析规则（`--gpu` / `IDEAL_GPU` / `auto` 等）。

@@ -38,8 +38,8 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from configs.gpu_select import resolve_cuda_visible_devices
-from preprocess_lib.core import _find_bpy_python
 from preprocess_lib.defaults import (
+    BPY_PYTHON,
     FILTER_INVALID_SUBDIR,
     FILTER_SCENES_BATCHES_JSONL,
     FILTER_SCENES_REPORT_CSV,
@@ -48,6 +48,20 @@ from preprocess_lib.build_inview import (
     MissingInViewInfoError,
     build_instance_seg_view_payload,
 )
+
+
+def _find_bpy_python() -> str:
+    """Python executable that has ``bpy`` (for ``-m preprocess_lib.check_overlap``); never imports bpy here."""
+    if BPY_PYTHON and os.path.isfile(BPY_PYTHON):
+        return BPY_PYTHON
+    candidate = os.path.normpath(
+        os.path.join(
+            str(_GENERATION_DIR), "..", "..", "miniconda", "envs", "infinigen", "bin", "python"
+        )
+    )
+    if os.path.isfile(candidate):
+        return candidate
+    return sys.executable
 
 
 def _raw_skip_names() -> frozenset[str]:

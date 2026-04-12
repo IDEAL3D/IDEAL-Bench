@@ -1,9 +1,9 @@
 """
 Write ``GT.json`` from the currently opened Blender scene (single-room box pipeline).
 
-Used by **preprocess** (``preprocess_lib.pipeline``) and **generation finalize** (``core`` loads the
-scene with in-process ``bpy`` and calls ``write_gt_json``). The CLI below also works with any
-Python that has ``bpy`` and an already-open ``scene.blend``.
+Used by **generation finalize** (``generate_lib.core`` loads the scene with in-process ``bpy`` and
+calls ``write_gt_json``) and any other Blender script that imports it. The CLI below also works with
+any Python that has ``bpy`` and an already-open ``scene.blend``.
 
 Object listing and room metrics use ``generation_common.asset_rules`` and ``generation_common.scene_geometry``.
 """

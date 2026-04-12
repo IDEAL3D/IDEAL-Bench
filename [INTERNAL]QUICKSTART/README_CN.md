@@ -37,7 +37,8 @@
 | 组件 | 路径 | 说明 |
 |------|------|------|
 | 合成入口 | `generation/generate.py` | 调用 `generate_lib/`（例如 `core.py`）。 |
-| 预处理入口 | `generation/preprocess.py` | 调用 `preprocess_lib/`，基于已有 `scene.blend` 产出真值、`objects_in_view` 等。 |
+| 阶段 1 筛选（重叠） | `generation/filter_scenes.py` | 镜内语义 + `check_overlap`；无效 → `invalid/`。 |
+| 阶段 2 镜内过滤 | `generation/inview.py` | F1/F2 + `truncation_filter` 子进程；重写 `objects_in_view.json`，写 `inview_batch.jsonl`。 |
 
 上述两条管线在代码结构上相互独立，无嵌套调用关系。Infinigen 子进程在子模块目录 **`infinigen-ideal/`** 内通过 `python -m infinigen_examples.single` 等形式启动。
 
@@ -63,7 +64,7 @@
 |------|----------|
 | `inference/infer.py` | 上述两种安装方式均包含 `google-genai`、`openai`。 |
 | `reconstruction/` | 需要 `bpy` 与 `mathutils`（全量依赖文件中已包含 `mathutils`；精简安装中单独列出）。渲染子进程固定为当前解释器 + `bpy_scripts/render.py`，不查找系统 `blender` 可执行文件。 |
-| `generation/`（含 `generate.py`、`preprocess.py` 及 `generate_lib/`、`preprocess_lib/`） | 仅适用于 **全量** `requirements.txt`；依赖 Infinigen 侧 Python 与科学计算相关包。 |
+| `generation/`（含 `generate.py`、`filter_scenes.py` 及 `generate_lib/`、`preprocess_lib/`） | 仅适用于 **全量** `requirements.txt`；依赖 Infinigen 侧 Python 与科学计算相关包。 |
 
 ---
 
@@ -87,7 +88,7 @@
 | API 与本地配置 | `[INTERNAL]api/check_api.py`：连通性检测；密钥等放在 `[INTERNAL]api/secrets/`（该目录下除 `.gitkeep` 外由 `.gitignore` 排除，见下文）。 |
 | 内部维护脚本 | `[INTERNAL]tools/`：像素统计、`gpu_selecting` 等内部工具（非主评测链路；见下文「含 `[INTERNAL]` 的目录」）。 |
 
-**矩形单房间合成与预处理**：由 `generation/generate.py`（经 `generate_lib/core.py`）实现合成；由 `generation/preprocess.py`（`preprocess_lib/`）从已有 `scene.blend` 产出真值与 `objects_in_view` 等，详见 `generation/README.md` 与 `generate_lib/README.md`。二者均依赖子模块 **`infinigen-ideal/`**。合成结果默认落盘位置见上文「合成产物的默认输出位置」。纳入评测前，请将场景 **复制或同步** 至 `data/scenes/`、`data/scenes2test/` 等约定路径。
+**矩形单房间合成与镜内 JSON**：由 `generation/generate.py`（经 `generate_lib/core.py`）实现合成并收尾写出 **`GT.json`** 等；**`filter_scenes.py`**（阶段 1）与 **`inview.py`**（阶段 2）与 **`preprocess_lib/`**（`build_inview`、`check_overlap`、`truncation_filter` 等）配合完成镜内与重叠相关流程，详见 `generation/README.md`、`[INTERNAL]QUICKSTART/preprocess.md`、`docs/PREPROCESS_DESIGN.md` 与 `generate_lib/README.md`。二者均依赖子模块 **`infinigen-ideal/`**。合成结果默认落盘位置见上文「合成产物的默认输出位置」。纳入评测前，请将场景 **复制或同步** 至 `data/scenes/`、`data/scenes2test/` 等约定路径。
 
 ---
 
@@ -130,7 +131,8 @@ IDEAL/
 ├── generation/
 │   ├── README.md
 │   ├── generate.py               # 批量合成入口 → 子进程 generate_lib.core；写 manifests
-│   ├── preprocess.py               # 预处理 CLI → preprocess_lib.cli
+│   ├── filter_scenes.py          # 阶段1：镜内语义 + 重叠；无效 → invalid/
+│   ├── inview.py                 # 阶段2：F1/F2/F3 后写 objects_in_view.json；inview_batch.jsonl
 │   ├── generate_lib/
 │   │   ├── core.py               # Infinigen 子进程、coarse/render、五件套收尾
 │   │   ├── build_metadata.py     # 拼 metadata.json
@@ -141,13 +143,11 @@ IDEAL/
 │   │   ├── scene_geometry.py     # AABB、地板/天花、射线、房高
 │   │   └── asset_rules.py        # 集合排除、collect_assets、相机/房间回退、scene_id
 │   └── preprocess_lib/
-│       ├── cli.py                # argparse 与 --final / 批处理等模式分发
-│       ├── core.py               # 批处理子进程循环、manifest、RAW→SCENES2TEST 同步
-│       ├── pipeline.py           # 单场景 bpy：GT.json、objects_in_view、npz 清理
-│       ├── defaults.py           # BPY 解释器路径等默认常量
-│       ├── extract_info.py       # objects_in_view.json；合并家具重叠摘要
-│       ├── extract_camview.py    # 实例分割 + metadata 对齐 → 镜内列表
-│       ├── check_overlap.py      # 家具两两重叠估计（由 extract_inview 调用）
+│       ├── defaults.py           # 阈值、文件名常量（inview / filter_scenes）
+│       ├── build_inview.py       # 镜内列表；F1+F2（filter_scenes / inview 共用）
+│       ├── extract_inview.py     # Blender 内写 objects_in_view + 重叠摘要（可选路径）
+│       ├── check_overlap.py      # 家具重叠（bpy；filter_scenes 子进程 -m）
+│       ├── truncation_filter.py  # F3 截断（bpy；inview子进程 -m）
 │       └── __init__.py
 ├── inference/
 │   ├── infer.py                  # VLM CLI；预测写入 result/{protocol}/{scene_id}/
