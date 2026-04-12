@@ -10,21 +10,22 @@
 
 ## 1) 闭源主流 VLM API（优先）
 
-| 厂商 | 模型版本（示例） | 发布时间 | 能力定位（简） | API 文档 | 备注 |
+| 厂商 | 模型版本（示例） | 发布时间 | 能力定位（简） | API 文档 | 价格(Input/Output) |
 |---|---|---|---|---|---|
-| OpenAI | gpt-5.4 pro | 2026-03 | 最新代多模态推理、结构化输出强 | https://developers.openai.com/api/docs/models/gpt-5.4-pro| 如账号未开通可回退 `gpt-4.1` / `gpt-4o` |
-| OpenAI | gpt-4.1 | 2025-04 | smartest model without reasoning | https://developers.openai.com/api/docs/models/gpt-4.1 | 适合做长期基线 |
-| Anthropic | claude-4.6-opus | 2026-02 | 高质量理解与复杂约束遵循 | https://docs.anthropic.com/en/docs/about-claude/models | 结构化 JSON 通常较稳 |
-| Anthropic | claude-4.6-sonnet | 2026-02 | 性价比版本，推理与速度平衡 | https://docs.anthropic.com/en/docs/about-claude/models | 推荐作为 Claude 主测版本 |
-| Google | gemini-3.1-pro | 2026-02 | 强推理与多模态理解 | https://ai.google.dev/gemini-api/docs/models/gemini-3.1-pro-preview?hl=zh-cn | 对长提示/规则约束表现较好 |
-| Google | gemini-3-flash | 2025-12 | 低延迟高吞吐 | https://ai.google.dev/gemini-api/docs/models/gemini-3-flash-preview?hl=zh-cn | 适合批量评测 |
-| xAI | grok-4.20 | 2026-02 | 新一代 Grok 系列推理能力 | https://docs.x.ai/developers/models| 需核对视觉输入接口细节 |
+| OpenAI | gpt-5.4 pro | 2026-03 | 最新代多模态推理、结构化输出强 | https://developers.openai.com/api/docs/models/gpt-5.4-pro| 30$/180$ |
+| OpenAI | gpt-5.4 | 2026-03 | 最新代多模态推理、结构化输出强 | https://developers.openai.com/api/docs/models/gpt-5.4| 2.5$/15$ |
+| OpenAI | gpt-4.1 | 2025-04 | smartest model without reasoning | https://developers.openai.com/api/docs/models/gpt-4.1 | 2$/8$ |
+| Anthropic | claude-4.6-opus | 2026-02 | 高质量理解与复杂约束遵循 | https://docs.anthropic.com/en/docs/about-claude/models | 5$/25$ |
+| Anthropic | claude-4.6-sonnet | 2026-02 | 性价比版本，推理与速度平衡 | https://docs.anthropic.com/en/docs/about-claude/models | 3$/15$ |
+| Google | gemini-3.1-pro | 2026-02 | 强推理与多模态理解 | https://ai.google.dev/gemini-api/docs/models/gemini-3.1-pro-preview?hl=zh-cn | 2$/12$ |
+| Google | gemini-3-flash | 2025-12 | 低延迟高吞吐 | https://ai.google.dev/gemini-api/docs/models/gemini-3-flash-preview?hl=zh-cn | 0.5$/3$ |
+| xAI | grok-4.20 | 2026-02 | 新一代 Grok 系列推理能力 | https://docs.x.ai/developers/models| 2$/6$ |
 
 ## 2) 开源主流 VLM（自部署/第三方托管）
 
 | 系列 | 模型版本（示例） | 发布时间 | 开源地址 / 文档 | API/部署文档 | 备注 |
 |---|---|---|---|---|---|
-| DeepSeek | DeepSeek-VL2 | 2024-12 |https://huggingface.co/deepseek-ai/deepseek-vl2| https://docs.vllm.ai | 需按具体 checkpoint 选型 |
+| DeepSeek | DeepSeek-Janus-pro-7B | 2025-02 |https://huggingface.co/deepseek-ai/Janus-Pro-7B| https://docs.vllm.ai | 需按具体 checkpoint 选型 |
 | Qwen | Qwen3-VL-30B-A3B-Instruct | 2025-11 | https://huggingface.co/collections/Qwen/qwen3-vl | https://qwen.readthedocs.io | 高质量主力开源候选 |
 | Qwen | Qwen3-VL-8B-Instruct | 2025-11 | https://huggingface.co/collections/Qwen/qwen3-vl | https://qwen.readthedocs.io | 低成本高吞吐候选 |
 | InternVL | InternVL3.5-30B-A3B | 2025-08 | https://huggingface.co/collections/OpenGVLab/internvl35 | https://internvl.readthedocs.io | 复杂视觉语义表现强 |
