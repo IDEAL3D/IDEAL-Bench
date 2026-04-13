@@ -498,7 +498,6 @@ def main() -> int:
     summary = {
         "type": "batch_summary",
         "timestamp": _now_ny(),
-        "scenes_root": scenes_root,
         **stats,
     }
     _append_jsonl(log_path, summary)
