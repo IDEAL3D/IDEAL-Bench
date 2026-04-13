@@ -9,14 +9,24 @@ and appends a per-scene diagnostic record to ``inview_batch.jsonl``.
 Filters (applied in order, cheapest first):
     1. Visibility       — instance-map pixel count >= MIN_VISIBLE_PIXELS  (pure Python)
     2. Aspect Ratio     — max(Δx/Δy, Δy/Δx) <= ASPECT_RATIO_MAX          (pure Python)
-    3. Truncation       — actual_pixels / projected_pixels >= TRUNCATION_RATIO_MIN  (bpy subprocess)
+    3. Truncation       — centroid within 20% of image border AND actual/projected < TRUNCATION_RATIO_MIN  (bpy subprocess)
 
-Only scenes with at least one filtered object are written to the batch log.
-Scenes with errors are always logged.
-A final batch-summary record is appended at the end.
+Room types in NO_FILTER_ROOM_TYPES (e.g. classroom, library) skip all three filters:
+all objects with any pixels in the instance map are written to objects_in_view.json directly.
+
+objects_in_view.json format per object: {id, category, actual_pixels, truncation_ratio, near_edge}
+3D attributes (position, dimensions, rotation_yaw) are omitted — look them up from GT.json by id.
+
+Only scenes with at least one filter triggered (or errors) are written to inview_batch.jsonl.
+Clean scenes are counted in batch_summary but not individually logged.
+Batches are separated by a blank line. A batch_summary record closes each run.
+Timestamps are in America/New_York time.
+
+Default behaviour: always (re-)write objects_in_view.json, overwriting if it already exists.
+Pass ``--skip`` to skip scenes where objects_in_view.json already exists.
 
 Usage:
-    python inview.py --scenes-root <path> [--workers N] [--skip-if-exists] [--gpu ID]
+    python filter_inview.py --scenes-root <path> [--workers N] [--skip] [--gpu ID]
 """
 
 from __future__ import annotations
@@ -29,9 +39,10 @@ import sys
 import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 _GENERATION_DIR = Path(__file__).resolve().parent
 if str(_GENERATION_DIR) not in sys.path:
@@ -42,43 +53,34 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from configs.gpu_select import resolve_cuda_visible_devices
-from preprocess_lib.build_inview import MissingInViewInfoError, build_inview_with_filters
+from preprocess_lib.build_inview import (
+    MissingInViewInfoError,
+    build_inview_no_filter,
+    build_inview_with_filters,
+)
 from preprocess_lib.defaults import (
     BPY_PYTHON,
     INVIEW_BATCH_LOG_JSONL,
     OBJECTS_IN_VIEW_JSON,
 )
+from preprocess_lib.scene_discovery import discover_scene_blend_paths
 from generation_common.asset_rules import scene_id_from_output_dir
 
+_TZ_NY = ZoneInfo("America/New_York")
 
-# ---------------------------------------------------------------------------
-# Scene discovery (same logic as filter_scenes.py)
-# ---------------------------------------------------------------------------
+# Room types that skip all three filters — all instance-map objects are kept as-is.
+NO_FILTER_ROOM_TYPES = frozenset({"classroom"})
 
-def _discover_blend_paths(scenes_root: str) -> List[str]:
-    skip = frozenset({"manifests", "invalid", "DEPRECATED", "0_DEPRECATED", "README.txt", ".DS_Store"})
-    root = os.path.abspath(os.path.expanduser(scenes_root))
-    out: List[str] = []
-    if not os.path.isdir(root):
-        return out
-    for name in sorted(os.listdir(root)):
-        if name in skip or name.startswith("."):
-            continue
-        d = os.path.join(root, name)
-        if not os.path.isdir(d):
-            continue
-        bp = os.path.join(d, "scene.blend")
-        if os.path.isfile(bp):
-            out.append(bp)
-    return out
+
+def _now_ny() -> str:
+    return datetime.now(_TZ_NY).isoformat(timespec="seconds")
 
 
 # ---------------------------------------------------------------------------
-# bpy python finder (same logic as filter_scenes.py)
+# bpy python finder
 # ---------------------------------------------------------------------------
 
 def _find_bpy_python() -> str:
-    """Python executable with ``bpy`` (for ``-m preprocess_lib.truncation_filter``)."""
     if BPY_PYTHON and os.path.isfile(BPY_PYTHON):
         return BPY_PYTHON
     candidate = os.path.normpath(
@@ -100,9 +102,14 @@ def _run_truncation_subprocess(
     blend_path: str,
     scene_id: str,
     candidates: List[Dict[str, Any]],
+    render_size: List[int],
 ) -> Dict[str, Any]:
     """Run truncation_filter in a bpy subprocess. Returns the parsed result dict."""
-    candidates_payload = {"scene_id": scene_id, "objects": candidates}
+    candidates_payload = {
+        "scene_id": scene_id,
+        "render_size": render_size,
+        "objects": candidates,
+    }
 
     fd_in, tmp_in = tempfile.mkstemp(suffix=".json", prefix="trunc_cand_")
     fd_out, tmp_out = tempfile.mkstemp(suffix=".json", prefix="trunc_res_")
@@ -145,15 +152,31 @@ def _run_truncation_subprocess(
 def _write_objects_in_view(
     blend_dir: str,
     scene_id: str,
-    kept_gt_ids: List[str],
-    gt_id_to_obj: Dict[str, Any],
+    kept_ids_ordered: List[str],
+    gt_id_to_stub: Dict[str, Dict[str, Any]],
+    f3_results: Dict[str, Dict[str, Any]],
 ) -> None:
-    from configs.constant import canonicalize_asset_category
+    """Write objects_in_view.json with minimal object stubs + F3 diagnostics.
 
-    objects_out = [gt_id_to_obj[gid] for gid in kept_gt_ids if gid in gt_id_to_obj]
-    categories = sorted(
-        {str(o["category"]) for o in objects_out if o.get("category") is not None}
-    )
+    Each object entry: {id, category, actual_pixels, truncation_ratio, near_edge}
+    3D fields are intentionally omitted — look them up from GT.json by id.
+    """
+    objects_out = []
+    for gid in kept_ids_ordered:
+        stub = gt_id_to_stub.get(gid)
+        if stub is None:
+            continue
+        f3 = f3_results.get(gid, {})
+        obj = {
+            "id": stub["id"],
+            "category": stub["category"],
+            "actual_pixels": f3.get("actual_pixels"),
+            "truncation_ratio": f3.get("truncation_ratio"),
+            "near_edge": f3.get("near_edge"),
+        }
+        objects_out.append(obj)
+
+    categories = sorted({o["category"] for o in objects_out if o.get("category")})
     payload = {
         "scene_id": scene_id,
         "categories_in_view_count": len(categories),
@@ -177,13 +200,13 @@ def _process_one_scene(
     blend_path: str,
     scenes_root: str,
     bpy_python: str,
-    skip_if_exists: bool,
+    skip: bool,
     print_lock: threading.Lock,
 ) -> Tuple[int, Optional[Dict[str, Any]]]:
     """Process one scene. Returns (job_idx, log_record_or_None).
 
-    log_record is None when the scene is fully clean (no filters triggered, no errors)
-    — clean scenes are counted in the batch summary but not written to the jsonl.
+    log_record is None for clean scenes (no filters triggered, no errors).
+    Clean scenes are counted in batch_summary but not written to jsonl.
     """
 
     def _log(msg: str) -> None:
@@ -194,11 +217,38 @@ def _process_one_scene(
     scene_id = scene_id_from_output_dir(blend_dir)
     _log(f"\n{'─'*60}\n[{job_idx}/{total}] {scene_id}\n{'─'*60}")
 
-    # Skip if objects_in_view.json already present
     out_path = os.path.join(blend_dir, OBJECTS_IN_VIEW_JSON)
-    if skip_if_exists and os.path.isfile(out_path):
+    if skip and os.path.isfile(out_path):
         _log(f"[inview] skip (exists): {out_path}")
         return job_idx, None
+
+    # --- Check if this room type bypasses all filters ---------------------
+    room_type = scene_id.split("_")[0]
+    if room_type in NO_FILTER_ROOM_TYPES:
+        _log(f"[inview] room_type={room_type!r} → skip all filters, use instance map directly")
+        try:
+            no_filter = build_inview_no_filter(scene_id, blend_dir)
+        except MissingInViewInfoError as e:
+            _log(f"[ERROR] missing inputs: {e}")
+            return job_idx, {
+                "scene_id": scene_id,
+                "status": "error",
+                "error_message": f"MissingInViewInfoError: {e}",
+            }
+        except Exception as e:
+            _log(f"[ERROR] unexpected: {type(e).__name__}: {e}")
+            return job_idx, {
+                "scene_id": scene_id,
+                "status": "error",
+                "error_message": f"{type(e).__name__}: {e}",
+            }
+        _write_objects_in_view(
+            blend_dir, scene_id,
+            no_filter["kept_ids_ordered"],
+            no_filter["gt_id_to_stub"],
+            no_filter["f3_results"],
+        )
+        return job_idx, None  # no filters → always clean, not logged
 
     # --- Filter 1 + 2 (pure Python) ---
     try:
@@ -223,48 +273,75 @@ def _process_one_scene(
     filter_2: List[Dict] = f12["filter_2"]
     kept_after_f2: List[str] = f12["kept_ids_ordered"]
     pixel_counts: Dict[str, int] = f12["pixel_counts"]
-    gt_id_to_obj: Dict[str, Any] = f12["gt_id_to_obj"]
+    centroids: Dict[str, List[float]] = f12["centroids"]
+    render_size: List[int] = f12["render_size"]
+    gt_id_to_stub: Dict[str, Any] = f12["gt_id_to_stub"]
+    gt_id_to_mattress_gt_id: Dict[str, str] = f12.get("gt_id_to_mattress_gt_id", {})
 
     # --- Filter 3 (bpy subprocess) ---
-    filter_3: List[Dict[str, Any]] = []
+    filter_3_filtered: List[Dict[str, Any]] = []
     behind_camera_tris: List[Dict[str, Any]] = []
-    kept_final: List[str] = kept_after_f2  # default: all pass if F3 skipped
+    kept_final: List[str] = kept_after_f2
+    f3_results: Dict[str, Dict[str, Any]] = {}
 
     if kept_after_f2:
         candidates = [
-            {"gt_id": gid, "actual_pixels": pixel_counts[gid]}
+            {
+                "gt_id": gid,
+                "actual_pixels": pixel_counts[gid],
+                "centroid": centroids.get(gid),
+                "mattress_gt_id": gt_id_to_mattress_gt_id.get(gid),  # None for non-bed objects
+            }
             for gid in kept_after_f2
         ]
-        trunc_result = _run_truncation_subprocess(bpy_python, blend_path, scene_id, candidates)
+        trunc_result = _run_truncation_subprocess(
+            bpy_python, blend_path, scene_id, candidates, render_size
+        )
         behind_camera_tris = trunc_result.get("behind_camera_tris") or []
 
         if not trunc_result.get("computed"):
             err = trunc_result.get("error", "unknown")
             _log(f"[WARN] truncation subprocess failed: {err} — F3 skipped, keeping all F2 survivors")
+            for gid in kept_after_f2:
+                f3_results[gid] = {
+                    "actual_pixels": pixel_counts[gid],
+                    "truncation_ratio": None,
+                    "near_edge": None,
+                }
         else:
             kept_final = []
             for res in trunc_result.get("results") or []:
+                gid = res["gt_id"]
+                f3_results[gid] = {
+                    "actual_pixels": res.get("actual_pixels"),
+                    "truncation_ratio": res.get("truncation_ratio"),
+                    "near_edge": res.get("near_edge"),
+                }
                 if res.get("passed", True):
-                    kept_final.append(res["gt_id"])
+                    kept_final.append(gid)
                 else:
-                    filter_3.append(
-                        {
-                            "gt_id": res["gt_id"],
-                            "actual_pixels": res.get("actual_pixels"),
-                            "projected_pixels": res.get("projected_pixels"),
-                            "truncation_ratio": res.get("truncation_ratio"),
-                        }
-                    )
+                    filter_3_filtered.append({
+                        "gt_id": gid,
+                        "actual_pixels": res.get("actual_pixels"),
+                        "truncation_ratio": res.get("truncation_ratio"),
+                        "near_edge": res.get("near_edge"),
+                    })
+    else:
+        for gid in kept_after_f2:
+            f3_results[gid] = {
+                "actual_pixels": pixel_counts.get(gid),
+                "truncation_ratio": None,
+                "near_edge": None,
+            }
 
     # --- Write objects_in_view.json ---
-    _write_objects_in_view(blend_dir, scene_id, kept_final, gt_id_to_obj)
+    _write_objects_in_view(blend_dir, scene_id, kept_final, gt_id_to_stub, f3_results)
 
-    # --- Build log record (only if something interesting happened) ---
-    any_filtered = bool(filter_1 or filter_2 or filter_3 or behind_camera_tris)
     status = "empty_after_filter" if not kept_final else "ok"
 
+    # --- Only log scenes where something interesting happened ---
+    any_filtered = bool(filter_1 or filter_2 or filter_3_filtered or behind_camera_tris)
     if not any_filtered and status == "ok":
-        # Clean scene — count in summary but don't write to jsonl
         return job_idx, None
 
     record: Dict[str, Any] = {
@@ -277,8 +354,8 @@ def _process_one_scene(
         record["filter_1_visibility"] = {"count": len(filter_1), "filtered": filter_1}
     if filter_2:
         record["filter_2_aspect_ratio"] = {"count": len(filter_2), "filtered": filter_2}
-    if filter_3:
-        record["filter_3_truncation"] = {"count": len(filter_3), "filtered": filter_3}
+    if filter_3_filtered:
+        record["filter_3_truncation"] = {"count": len(filter_3_filtered), "filtered": filter_3_filtered}
     if behind_camera_tris:
         record["behind_camera_tris"] = behind_camera_tris
 
@@ -292,6 +369,12 @@ def _process_one_scene(
 def _append_jsonl(path: str, record: Dict[str, Any]) -> None:
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def _append_batch_separator(path: str) -> None:
+    """Append a blank line to visually separate batches in the jsonl file."""
+    with open(path, "a", encoding="utf-8") as f:
+        f.write("\n")
 
 
 # ---------------------------------------------------------------------------
@@ -311,8 +394,8 @@ def main() -> int:
         help="Parallel scene jobs (default: 1). Each spawns a bpy subprocess for Filter 3.",
     )
     parser.add_argument(
-        "--skip-if-exists", action="store_true",
-        help="Skip scenes where objects_in_view.json already exists.",
+        "--skip", action="store_true",
+        help="Skip scenes where objects_in_view.json already exists. Default: overwrite.",
     )
     parser.add_argument(
         "--gpu", type=str, default=None,
@@ -329,7 +412,7 @@ def main() -> int:
     os.environ["CUDA_VISIBLE_DEVICES"] = _cuda
     bpy_python = _find_bpy_python()
 
-    blends = _discover_blend_paths(scenes_root)
+    blends = discover_scene_blend_paths(scenes_root)
     if not blends:
         print(f"[WARN] No scene.blend found under {scenes_root}")
         return 0
@@ -338,7 +421,8 @@ def main() -> int:
     print(f"[inview] scenes_root={scenes_root}")
     print(f"[inview] CUDA_VISIBLE_DEVICES={_cuda}")
     print(f"[inview] bpy python: {bpy_python}")
-    print(f"[inview] {len(blends)} scene(s), workers={args.workers}")
+    print(f"[inview] {len(blends)} scene(s), workers={args.workers}, skip={args.skip}")
+    print(f"[inview] no_filter_room_types={sorted(NO_FILTER_ROOM_TYPES)}")
     print(f"[inview] batch log -> {log_path}")
 
     print_lock = threading.Lock()
@@ -348,7 +432,7 @@ def main() -> int:
         for i, bp in enumerate(blends, 1):
             result = _process_one_scene(
                 i, len(blends), bp, scenes_root, bpy_python,
-                args.skip_if_exists, print_lock,
+                args.skip, print_lock,
             )
             indexed_records.append(result)
     else:
@@ -357,7 +441,7 @@ def main() -> int:
                 ex.submit(
                     _process_one_scene,
                     i, len(blends), bp, scenes_root, bpy_python,
-                    args.skip_if_exists, print_lock,
+                    args.skip, print_lock,
                 ): i
                 for i, bp in enumerate(blends, 1)
             }
@@ -380,7 +464,6 @@ def main() -> int:
 
     for _, record in indexed_records:
         if record is None:
-            # Clean scene
             stats["scenes_ok"] += 1
             continue
 
@@ -398,42 +481,50 @@ def main() -> int:
         for key, stat_key in (
             ("filter_1_visibility", "filter_1_visibility"),
             ("filter_2_aspect_ratio", "filter_2_aspect_ratio"),
-            ("filter_3_truncation", "filter_3_truncation"),
         ):
             if key in record:
                 stats[stat_key]["scenes_affected"] += 1
                 stats[stat_key]["objects_filtered"] += record[key].get("count", 0)
 
+        f3 = record.get("filter_3_truncation", {})
+        filtered_count = len(f3.get("filtered") or [])
+        if filtered_count > 0:
+            stats["filter_3_truncation"]["scenes_affected"] += 1
+            stats["filter_3_truncation"]["objects_filtered"] += filtered_count
+
         _append_jsonl(log_path, record)
 
-    # --- Batch summary ---
+    # --- Batch summary + separator ---
     summary = {
         "type": "batch_summary",
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "timestamp": _now_ny(),
         "scenes_root": scenes_root,
         **stats,
     }
     _append_jsonl(log_path, summary)
+    _append_batch_separator(log_path)
 
     print(f"\n[inview] DONE. batch log -> {log_path}")
     print(
-        f"  total={stats['scenes_total']} ok={stats['scenes_ok']} "
-        f"empty={stats['scenes_empty_after_filter']} errors={stats['scenes_with_errors']}"
+        f"  batch_scene_num={stats['scenes_total']} "
+        f"processed_scene_num={stats['scenes_ok']} "
+        f"empty_scene_num={stats['scenes_empty_after_filter']} "
+        f"error_scene_num={stats['scenes_with_errors']}"
     )
     print(
-        f"  F1 affected={stats['filter_1_visibility']['scenes_affected']} "
-        f"obj={stats['filter_1_visibility']['objects_filtered']}"
+        f"  f1_affected_scene_num={stats['filter_1_visibility']['scenes_affected']} "
+        f"f1_filtered_object_num={stats['filter_1_visibility']['objects_filtered']}"
     )
     print(
-        f"  F2 affected={stats['filter_2_aspect_ratio']['scenes_affected']} "
-        f"obj={stats['filter_2_aspect_ratio']['objects_filtered']}"
+        f"  f2_affected_scene_num={stats['filter_2_aspect_ratio']['scenes_affected']} "
+        f"f2_filtered_object_num={stats['filter_2_aspect_ratio']['objects_filtered']}"
     )
     print(
-        f"  F3 affected={stats['filter_3_truncation']['scenes_affected']} "
-        f"obj={stats['filter_3_truncation']['objects_filtered']}"
+        f"  f3_affected_scene_num={stats['filter_3_truncation']['scenes_affected']} "
+        f"f3_filtered_object_num={stats['filter_3_truncation']['objects_filtered']}"
     )
     print(
-        f"  behind_camera_tris scenes={stats['scenes_with_behind_camera_tris']}"
+        f"  behind_camera_tris_scene_num={stats['scenes_with_behind_camera_tris']}"
     )
     return 1 if stats["scenes_with_errors"] else 0
 

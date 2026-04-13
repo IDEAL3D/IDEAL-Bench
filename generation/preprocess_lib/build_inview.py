@@ -107,6 +107,20 @@ def _load_object_index_map(blend_dir: str) -> Dict[str, str]:
     return {str(k): str(v) for k, v in oim.items()}
 
 
+def _load_render_size(blend_dir: str) -> Tuple[int, int]:
+    """Return (width, height) from metadata.json render.resolution, fallback (1280, 720)."""
+    path = os.path.join(blend_dir, METADATA_JSON)
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        res = data.get("render", {}).get("resolution")
+        if isinstance(res, (list, tuple)) and len(res) == 2:
+            return int(res[0]), int(res[1])
+    except Exception:
+        pass
+    return 1280, 720
+
+
 def _gt_id_to_metadata_base(gtid: str) -> str:
     return re.sub(r"[^a-zA-Z0-9]+", "_", str(gtid)).strip("_").lower() or "object"
 
@@ -142,6 +156,18 @@ def _build_metadata_base_to_gt_id(blend_dir: str) -> Dict[str, str]:
             )
         elif b not in base_to_id:
             base_to_id[b] = gid
+
+    # MattressFactory shares seed/spawn_id with SingleBedFactory but has no GT entry.
+    # Register mattressfactory_xxx base → SingleBedFactory GT id so mattress pixels
+    # are merged into the bed's actual_pixels during instance map resolution.
+    extra: Dict[str, str] = {}
+    for base, gid in base_to_id.items():
+        if base.startswith("singlebedfactory"):
+            mattress_base = re.sub(r"^singlebedfactory", "mattressfactory", base)
+            if mattress_base not in base_to_id:
+                extra[mattress_base] = gid
+    base_to_id.update(extra)
+
     return base_to_id
 
 
@@ -159,9 +185,43 @@ def _object_index_counts_from_png(seg_path: str) -> Dict[int, int]:
     return out
 
 
+def _id_and_category_from_gt(
+    blend_dir: str, gt_ids_in_order: List[str]
+) -> List[Dict[str, Any]]:
+    """Return minimal object stubs [{id, category}] aligned to GT, without 3D fields."""
+    path = os.path.join(blend_dir, GT_JSON_NAME)
+    if not os.path.isfile(path):
+        print(f"[build_inview] WARN: missing {GT_JSON_NAME}, objects=[]")
+        return []
+    try:
+        with open(path, encoding="utf-8") as f:
+            gt_data = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"[build_inview] WARN: could not read GT: {e}")
+        return []
+    objs = gt_data.get("scene", {}).get("objects")
+    if not isinstance(objs, list):
+        return []
+    id_to_category = {
+        str(o.get("id")): canonicalize_asset_category(str(o["category"]))
+        for o in objs
+        if isinstance(o, dict) and o.get("id") is not None and o.get("category") is not None
+    }
+
+    out: List[Dict[str, Any]] = []
+    for gid in gt_ids_in_order:
+        cat = id_to_category.get(gid)
+        if cat is None:
+            print(f"[build_inview] WARN: in-view id {gid!r} not found in GT, skipped")
+            continue
+        out.append({"id": gid, "category": cat})
+    return out
+
+
 def _objects_from_gt_for_names(
     blend_dir: str, root_names_in_order: List[str]
 ) -> List[Dict[str, Any]]:
+    """Legacy full-row loader — used only by build_instance_seg_view_payload (filter_scenes.py)."""
     path = os.path.join(blend_dir, GT_JSON_NAME)
     if not os.path.isfile(path):
         print(f"[build_inview] WARN: missing {GT_JSON_NAME}, objects=[]")
@@ -178,7 +238,6 @@ def _objects_from_gt_for_names(
     id_to_row = {
         str(o.get("id")): o for o in objs if isinstance(o, dict) and o.get("id") is not None
     }
-
     out: List[Dict[str, Any]] = []
     for key in root_names_in_order:
         row = id_to_row.get(key)
@@ -270,21 +329,49 @@ def _instance_map_bbox(arr, pass_index: int) -> Optional[Tuple[int, int, int, in
     return int(cols[0]), int(cols[-1]), int(rows[0]), int(rows[-1])
 
 
+def _instance_map_centroid(arr, pass_index: int) -> Optional[Tuple[float, float]]:
+    """Return (cx, cy) centroid of pixels matching pass_index, or None if empty."""
+    import numpy as np
+
+    rows, cols = np.where(arr == pass_index)
+    if len(rows) == 0:
+        return None
+    return float(cols.mean()), float(rows.mean())
+
+
+def _merge_mattress_pixels(
+    gt_id_to_pixels: Dict[str, int],
+    gt_id_to_pidx: Dict[str, int],
+    arr,
+    object_index_map: Dict[str, str],
+    base_to_gt: Dict[str, str],
+) -> None:
+    """Merge MattressFactory pixel counts into their corresponding SingleBedFactory entry."""
+    mattress_ids = [gid for gid in list(gt_id_to_pixels) if gid.startswith("MattressFactory")]
+    for mattress_id in mattress_ids:
+        bed_id = re.sub(r"^MattressFactory", "SingleBedFactory", mattress_id)
+        if bed_id in gt_id_to_pixels:
+            gt_id_to_pixels[bed_id] += gt_id_to_pixels.pop(mattress_id)
+            gt_id_to_pidx.pop(mattress_id, None)
+            print(
+                f"[build_inview] merged mattress pixels into bed: "
+                f"{mattress_id} → {bed_id} "
+                f"(combined actual_pixels={gt_id_to_pixels[bed_id]})"
+            )
+        else:
+            gt_id_to_pixels[bed_id] = gt_id_to_pixels.pop(mattress_id)
+            gt_id_to_pidx[bed_id] = gt_id_to_pidx.pop(mattress_id)
+            print(
+                f"[build_inview] mattress visible but bed frame not — "
+                f"remapped {mattress_id} → {bed_id}"
+            )
+
+
 def build_inview_with_filters(
     scene_id: str,
     blend_dir: str,
 ) -> Dict[str, Any]:
-    """Filter 1 (visibility) + Filter 2 (aspect ratio) applied with per-object diagnostics.
-
-    Returns a dict with:
-      - ``kept_gt_ids``: set[str] — gt_ids surviving both F1 and F2
-      - ``pixel_counts``: dict[str, int] — gt_id → actual pixel count (for Filter 3)
-      - ``filter_1``: list of {gt_id, pixel_count} dicts for filtered objects
-      - ``filter_2``: list of {gt_id, aspect_ratio} dicts for filtered objects
-      - ``objects_inview_original``: int — count before any filter
-      - ``gt_id_to_obj``: dict[str, dict] — gt_id → GT object row (for final payload)
-      - ``kept_ids_ordered``: list[str] — ``kept_gt_ids`` sorted; input ordering for Filter 3 / final write
-    """
+    """Filter 1 (visibility) + Filter 2 (aspect ratio) applied with per-object diagnostics."""
     import numpy as np
 
     seg_path = os.path.join(blend_dir, INSTANCE_SEGMENTATION_PNG)
@@ -297,11 +384,9 @@ def build_inview_with_filters(
     base_to_gt = _build_metadata_base_to_gt_id(blend_dir)
     arr = _load_instance_segmentation_u16(seg_path)
     counts = _object_index_counts_from_png(seg_path)
+    render_size = _load_render_size(blend_dir)
 
-    # --- resolve pass_index → gt_id, pixel_count --------------------------
-    # gt_id → pixel_count for all objects with any pixels (pre-Filter-1)
     gt_id_to_pixels: Dict[str, int] = {}
-    # gt_id → pass_index (needed for bbox lookup)
     gt_id_to_pidx: Dict[str, int] = {}
 
     for pi, pc in sorted(counts.items()):
@@ -313,51 +398,63 @@ def build_inview_with_filters(
         gid = base_to_gt.get(mb)
         if gid is None:
             continue
-        # keep the larger pixel count if gid maps to multiple pass_indices
         if gid not in gt_id_to_pixels or pc > gt_id_to_pixels[gid]:
             gt_id_to_pixels[gid] = pc
             gt_id_to_pidx[gid] = pi
 
-    # --- Filter 1: visibility (MIN_VISIBLE_PIXELS) ------------------------
+    _merge_mattress_pixels(gt_id_to_pixels, gt_id_to_pidx, arr, object_index_map, base_to_gt)
+
     filter_1_filtered: List[Dict[str, Any]] = []
-    after_f1: Dict[str, int] = {}  # gt_id → pixel_count
+    after_f1: Dict[str, int] = {}
 
     for gid, pc in gt_id_to_pixels.items():
         if pc < MIN_VISIBLE_PIXELS:
-            filter_1_filtered.append({"gt_id": gid, "pixel_count": pc})
+            filter_1_filtered.append({"gt_id": gid, "actual_pixels": pc})
         else:
             after_f1[gid] = pc
 
     objects_inview_original = len(gt_id_to_pixels)
 
-    # --- Filter 2: aspect ratio -------------------------------------------
     filter_2_filtered: List[Dict[str, Any]] = []
     after_f2: Set[str] = set()
+    gt_id_to_centroid: Dict[str, List[float]] = {}
 
     for gid, pc in after_f1.items():
-        pidx = gt_id_to_pidx[gid]
-        bbox = _instance_map_bbox(arr, pidx)
+        pidx = gt_id_to_pidx.get(gid)
+        bbox = _instance_map_bbox(arr, pidx) if pidx is not None else None
         if bbox is None:
-            # shouldn't happen since pc >= MIN_VISIBLE_PIXELS, but guard anyway
             after_f2.add(gid)
+            render_w, render_h = render_size
+            gt_id_to_centroid[gid] = [render_w / 2.0, render_h / 2.0]
             continue
+
         x_min, x_max, y_min, y_max = bbox
         dx = max(x_max - x_min, 1)
         dy = max(y_max - y_min, 1)
         ratio = max(dx / dy, dy / dx)
         if ratio > ASPECT_RATIO_MAX:
             filter_2_filtered.append({"gt_id": gid, "aspect_ratio": round(ratio, 2)})
-        else:
-            after_f2.add(gid)
+            continue
 
-    # --- load GT rows for kept objects ------------------------------------
+        after_f2.add(gid)
+        centroid = _instance_map_centroid(arr, pidx)
+        if centroid is not None:
+            gt_id_to_centroid[gid] = list(centroid)
+        else:
+            render_w, render_h = render_size
+            gt_id_to_centroid[gid] = [render_w / 2.0, render_h / 2.0]
+
     kept_ids_ordered = sorted(after_f2)
-    objects_out = _objects_from_gt_for_names(blend_dir, kept_ids_ordered)
-    for o in objects_out:
-        c = o.get("category")
-        if c is not None:
-            o["category"] = canonicalize_asset_category(str(c))
-    gt_id_to_obj = {str(o["id"]): o for o in objects_out if o.get("id") is not None}
+    stubs = _id_and_category_from_gt(blend_dir, kept_ids_ordered)
+    gt_id_to_stub = {s["id"]: s for s in stubs}
+
+    # Build bed → mattress GT id mapping for F3 projected-pixels merging.
+    # MattressFactory has no GT entry so we derive its expected GT id from the bed's.
+    gt_id_to_mattress_gt_id: Dict[str, str] = {
+        gid: re.sub(r"^SingleBedFactory", "MattressFactory", gid)
+        for gid in kept_ids_ordered
+        if gid.startswith("SingleBedFactory")
+    }
 
     print(
         f"[build_inview] F1+F2: original={objects_inview_original} "
@@ -370,10 +467,81 @@ def build_inview_with_filters(
         "objects_inview_original": objects_inview_original,
         "kept_gt_ids": after_f2,
         "pixel_counts": {gid: after_f1[gid] for gid in after_f2},
+        "centroids": gt_id_to_centroid,
+        "render_size": list(render_size),
         "filter_1": filter_1_filtered,
         "filter_2": filter_2_filtered,
-        "gt_id_to_obj": gt_id_to_obj,
+        "gt_id_to_stub": gt_id_to_stub,
         "kept_ids_ordered": kept_ids_ordered,
+        "gt_id_to_mattress_gt_id": gt_id_to_mattress_gt_id,  # bed → mattress GT id
+    }
+
+
+# ---------------------------------------------------------------------------
+# No-filter path: for room types like classroom / library
+# ---------------------------------------------------------------------------
+
+def build_inview_no_filter(
+    scene_id: str,
+    blend_dir: str,
+) -> Dict[str, Any]:
+    """Return all GT-aligned objects with any pixels in the instance map, no filtering.
+
+    Used for room types (e.g. classroom, library) where visibility filters are not
+    appropriate — all objects that appear in the instance map are considered in-view.
+
+    Returns a dict compatible with ``_write_objects_in_view``:
+      - ``kept_ids_ordered``: list[str]
+      - ``gt_id_to_stub``: dict[str, dict]
+      - ``f3_results``: dict[str, dict] — actual_pixels filled, truncation_ratio/near_edge null
+    """
+    seg_path = os.path.join(blend_dir, INSTANCE_SEGMENTATION_PNG)
+    if not os.path.isfile(seg_path):
+        raise MissingInViewInfoError(
+            f"Missing {INSTANCE_SEGMENTATION_PNG}; cannot build objects_in_view: {seg_path}"
+        )
+
+    object_index_map = _load_object_index_map(blend_dir)
+    base_to_gt = _build_metadata_base_to_gt_id(blend_dir)
+    counts = _object_index_counts_from_png(seg_path)
+
+    # All objects with any pixels (> 0), no threshold
+    gt_id_to_pixels: Dict[str, int] = {}
+    for pi, pc in sorted(counts.items()):
+        key = str(int(pi))
+        meta_name = object_index_map.get(key)
+        if meta_name is None:
+            continue
+        mb = _metadata_label_to_base(meta_name)
+        gid = base_to_gt.get(mb)
+        if gid is None:
+            continue
+        if gid not in gt_id_to_pixels or pc > gt_id_to_pixels[gid]:
+            gt_id_to_pixels[gid] = pc
+
+    kept_ids_ordered = sorted(gt_id_to_pixels.keys())
+    stubs = _id_and_category_from_gt(blend_dir, kept_ids_ordered)
+    gt_id_to_stub = {s["id"]: s for s in stubs}
+
+    # f3_results: actual_pixels from instance map, no ratio info
+    f3_results: Dict[str, Dict[str, Any]] = {
+        gid: {
+            "actual_pixels": gt_id_to_pixels[gid],
+            "truncation_ratio": None,
+            "near_edge": None,
+        }
+        for gid in kept_ids_ordered
+    }
+
+    print(
+        f"[build_inview] no-filter: {len(kept_ids_ordered)} GT objects in-view "
+        f"(all instance-map pixels > 0, no threshold)"
+    )
+
+    return {
+        "kept_ids_ordered": kept_ids_ordered,
+        "gt_id_to_stub": gt_id_to_stub,
+        "f3_results": f3_results,
     }
 
 

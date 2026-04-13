@@ -1,56 +1,29 @@
 """
 Filter 3 — Truncation Filter.
 
-Runs inside a bpy process (called as a subprocess by ``inview.py``).
+Runs inside a bpy process (called as a subprocess by ``filter_inview.py``).
 
-For each candidate gt_id, projects the object's evaluated mesh triangles onto
-the camera's image plane (unbounded, no occlusion) via software rasterization,
-then computes:
+Computes truncation_ratio = actual_pixels / projected_pixels for each candidate object,
+where projected_pixels is the mesh silhouette rasterized onto an unbounded virtual canvas
+(no occlusion, no image boundary clipping).
 
-    truncation_ratio = actual_pixels (from instance map) / projected_pixels (mesh silhouette)
+An object is filtered only when ALL THREE hold:
+    1. Centroid of its instance-map pixels is within EDGE_CENTROID_MARGIN of any image border.
+    2. truncation_ratio < TRUNCATION_RATIO_MIN.
+    3. actual_pixels / (W * H) < OCCUPANCY_MIN  (rescue: keeps visually significant objects
+       whose projected_pixels is inflated by near-camera depth ≈ 0).
 
-Objects below ``TRUNCATION_RATIO_MIN`` are flagged as heavily truncated at the
-camera edge and should be excluded from objects_in_view.
+For SingleBedFactory objects, the corresponding MattressFactory mesh is also rasterized
+and its projected pixels merged, since bed + mattress share the same GT entry.
 
-CLI (subprocess mode):
+CLI:
     bpy_python -m preprocess_lib.truncation_filter \\
         --blend <scene.blend> \\
-        --candidates-json <path_to_candidates.json> \\
-        --out-json <result_path.json>
+        --candidates-json <candidates.json> \\
+        --out-json <result.json>
 
-candidates_json schema:
-    {
-      "scene_id": "...",
-      "objects": [
-        {"gt_id": "...", "actual_pixels": 1234},
-        ...
-      ]
-    }
-
-result_json schema:
-    {
-      "scene_id": "...",
-      "computed": true,
-      "results": [
-        {
-          "gt_id": "...",
-          "actual_pixels": 1234,
-          "projected_pixels": 5678,
-          "truncation_ratio": 0.217,
-          "passed": false
-        },
-        ...
-      ],
-      "behind_camera_tris": [
-        {
-          "gt_id": "...",
-          "total_tris": 800,
-          "skipped_tris": 12,
-          "skipped_ratio": 0.015
-        }
-      ],
-      "error": null
-    }
+candidates.json: {scene_id, render_size:[W,H], objects:[{gt_id, actual_pixels, centroid:[cx,cy], mattress_gt_id?}]}
+result.json:     {scene_id, computed, results:[{gt_id, actual_pixels, truncation_ratio, near_edge, passed}], behind_camera_tris, error}
 """
 
 from __future__ import annotations
@@ -70,7 +43,29 @@ _REPO_ROOT = os.path.dirname(_GENERATION_DIR)
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from .defaults import TRUNCATION_RATIO_MIN
+from .defaults import EDGE_CENTROID_MARGIN, OCCUPANCY_MIN, TRUNCATION_RATIO_MIN
+
+
+# ---------------------------------------------------------------------------
+# Edge proximity check (centroid-based)
+# ---------------------------------------------------------------------------
+
+def _is_near_edge(
+    cx: float,
+    cy: float,
+    img_w: int,
+    img_h: int,
+    margin: float = EDGE_CENTROID_MARGIN,
+) -> bool:
+    """Return True if the pixel centroid is within ``margin`` fraction of any image border."""
+    margin_x = img_w * margin
+    margin_y = img_h * margin
+    return (
+        cx < margin_x
+        or cx > img_w - margin_x
+        or cy < margin_y
+        or cy > img_h - margin_y
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -83,22 +78,15 @@ def _build_camera_matrix(cam_obj) -> Any:
 
 
 def _build_intrinsics(cam_obj, render_w: int, render_h: int) -> Tuple[float, float, float, float]:
-    """Return (fx, fy, cx, cy) in pixels.
-
-    Uses Blender's camera data directly — more reliable than re-deriving from
-    metadata.json focal_length_mm / sensor_width.
-    """
+    """Return (fx, fy, cx, cy) in pixels."""
     cam = cam_obj.data
-    # Blender stores focal length in mm and sensor size in mm.
-    # fx = focal_length_mm / sensor_width_mm * image_width_px
-    # sensor fit determines which axis focal_length is normalised against.
-    sensor_fit = cam.sensor_fit  # 'AUTO', 'HORIZONTAL', 'VERTICAL'
+    sensor_fit = cam.sensor_fit
     aspect = render_w / render_h
 
     if sensor_fit == "VERTICAL" or (sensor_fit == "AUTO" and aspect < 1.0):
         sensor_mm = cam.sensor_height
         fy = (cam.lens / sensor_mm) * render_h
-        fx = fy  # square pixels assumed
+        fx = fy
     else:
         sensor_mm = cam.sensor_width
         fx = (cam.lens / sensor_mm) * render_w
@@ -113,22 +101,30 @@ def _build_intrinsics(cam_obj, render_w: int, render_h: int) -> Tuple[float, flo
 # Mesh projection + rasterization
 # ---------------------------------------------------------------------------
 
-def _project_vertex(v_world, view_mat, fx: float, fy: float, cx: float, cy: float):
-    """Project a single world-space vertex to (u, v, depth).
+def _project_vertex(
+    v_world,
+    view_mat,
+    fx: float,
+    fy: float,
+    cx: float,
+    cy: float,
+    render_w: int,
+    render_h: int,
+):
+    """Project world-space vertex to (u, v, depth), clamped to [-W, 2W] x [-H, 2H].
 
-    Returns (u, v, depth) where depth > 0 means in front of camera.
-    u, v are pixel coordinates (may be outside image bounds — intentional).
-    Returns None if the vertex is behind the camera (depth <= 0).
+    Returns None if vertex is behind camera (depth <= 0).
     """
     import mathutils
 
     v_cam = view_mat @ mathutils.Vector((v_world.x, v_world.y, v_world.z, 1.0))
-    # Blender camera looks down -Z in camera space; depth is positive in front
     depth = -v_cam.z
     if depth <= 0:
-        return None  # behind camera
+        return None
     u = fx * (v_cam.x / depth) + cx
-    v = -fy * (v_cam.y / depth) + cy  # flip Y: image Y goes down
+    v = -fy * (v_cam.y / depth) + cy
+    u = max(float(-render_w), min(u, float(render_w * 2)))
+    v = max(float(-render_h), min(v, float(render_h * 2)))
     return u, v, depth
 
 
@@ -138,11 +134,7 @@ def _rasterize_triangle(
     uv2: Tuple[float, float],
     pixel_set: set,
 ) -> None:
-    """Add all integer pixel centers inside the triangle to pixel_set.
-
-    Uses a bounding-box scan with barycentric coordinate test.
-    No image-boundary clipping — intentional (unbounded projection).
-    """
+    """Add integer pixel centers inside the triangle to pixel_set (unbounded)."""
     u0, v0 = uv0
     u1, v1 = uv1
     u2, v2 = uv2
@@ -152,16 +144,13 @@ def _rasterize_triangle(
     v_min = int(math.floor(min(v0, v1, v2)))
     v_max = int(math.ceil(max(v0, v1, v2)))
 
-    # Degenerate triangle guard
     denom = (v1 - v2) * (u0 - u2) + (u2 - u1) * (v0 - v2)
     if abs(denom) < 1e-6:
         return
-
     inv_denom = 1.0 / denom
 
     for pu in range(u_min, u_max + 1):
         for pv in range(v_min, v_max + 1):
-            # Barycentric coordinates
             w0 = ((v1 - v2) * (pu - u2) + (u2 - u1) * (pv - v2)) * inv_denom
             w1 = ((v2 - v0) * (pu - u2) + (u0 - u2) * (pv - v2)) * inv_denom
             w2 = 1.0 - w0 - w1
@@ -176,11 +165,13 @@ def _compute_projected_pixels(
     fy: float,
     cx: float,
     cy: float,
+    render_w: int,
+    render_h: int,
 ) -> Tuple[int, int, int]:
-    """Rasterize all mesh triangles of ``root_obj`` subtree.
+    """Rasterize all mesh triangles of root_obj subtree.
 
     Returns (projected_pixel_count, total_tris, skipped_tris).
-    skipped_tris: triangles with any vertex behind camera (depth <= 0), conservatively skipped.
+    skipped_tris: triangles with any vertex behind camera, conservatively skipped.
     """
     import bpy
 
@@ -189,7 +180,6 @@ def _compute_projected_pixels(
     total_tris = 0
     skipped_tris = 0
 
-    # Collect all mesh objects in the subtree (root + all children recursively)
     def _iter_meshes(obj):
         if obj.type == "MESH":
             yield obj
@@ -206,21 +196,15 @@ def _compute_projected_pixels(
             me.calc_loop_triangles()
             mw = oe.matrix_world
 
-            # Project all vertices once
             verts_uv: List[Optional[Tuple[float, float]]] = []
             for v in me.vertices:
                 v_world = mw @ v.co
-                result = _project_vertex(v_world, view_mat, fx, fy, cx, cy)
-                if result is None:
-                    verts_uv.append(None)  # behind camera
-                else:
-                    verts_uv.append((result[0], result[1]))
+                result = _project_vertex(v_world, view_mat, fx, fy, cx, cy, render_w, render_h)
+                verts_uv.append((result[0], result[1]) if result is not None else None)
 
             for lt in me.loop_triangles:
                 i0, i1, i2 = lt.vertices
-                uv0 = verts_uv[i0]
-                uv1 = verts_uv[i1]
-                uv2 = verts_uv[i2]
+                uv0, uv1, uv2 = verts_uv[i0], verts_uv[i1], verts_uv[i2]
                 total_tris += 1
                 if uv0 is None or uv1 is None or uv2 is None:
                     skipped_tris += 1
@@ -242,41 +226,25 @@ def _compute_projected_pixels(
 def compute_truncation(
     blend_dir: str,
     candidates: List[Dict[str, Any]],
+    render_w: int,
+    render_h: int,
 ) -> Dict[str, Any]:
-    """Compute truncation ratio for each candidate object.
-
-    ``candidates``: list of {"gt_id": str, "actual_pixels": int}
-
-    Returns result dict matching the result_json schema in the module docstring.
-    """
+    """Compute truncation ratio for each candidate. See module docstring for filter logic."""
     import bpy
-
     from generation_common.asset_rules import find_render_camera, collect_assets
 
-    result: Dict[str, Any] = {
-        "computed": False,
-        "results": [],
-        "behind_camera_tris": [],
-        "error": None,
-    }
+    result: Dict[str, Any] = {"computed": False, "results": [], "behind_camera_tris": [], "error": None}
 
     cam_obj = find_render_camera()
     if cam_obj is None:
         result["error"] = "render_camera_not_found"
         return result
 
-    render = bpy.context.scene.render
-    render_w = render.resolution_x
-    render_h = render.resolution_y
-
     view_mat = _build_camera_matrix(cam_obj)
     fx, fy, cx, cy = _build_intrinsics(cam_obj, render_w, render_h)
+    img_total_pixels = render_w * render_h
 
-    # Build gt_id → bpy object map from unique_assets
-    all_assets = collect_assets()
-    gt_id_to_bpy: Dict[str, Any] = {}
-    for obj in all_assets:
-        gt_id_to_bpy[obj.name] = obj
+    gt_id_to_bpy: Dict[str, Any] = {obj.name: obj for obj in collect_assets()}
 
     obj_results: List[Dict[str, Any]] = []
     behind_cam_records: List[Dict[str, Any]] = []
@@ -284,73 +252,79 @@ def compute_truncation(
     for cand in candidates:
         gt_id: str = cand["gt_id"]
         actual_pixels: int = int(cand["actual_pixels"])
+        centroid: Optional[List[float]] = cand.get("centroid")
+        mattress_gt_id: Optional[str] = cand.get("mattress_gt_id")
 
-        bpy_obj = gt_id_to_bpy.get(gt_id)
-        if bpy_obj is None:
-            # Try partial match — gt_id may differ slightly from bpy object name
-            for name, obj in gt_id_to_bpy.items():
-                if gt_id in name or name in gt_id:
-                    bpy_obj = obj
-                    break
+        near_edge = (
+            _is_near_edge(centroid[0], centroid[1], render_w, render_h)
+            if centroid is not None and len(centroid) == 2
+            else False
+        )
 
+        def _find_bpy(target_id: str):
+            obj = gt_id_to_bpy.get(target_id)
+            if obj is None:
+                for name, o in gt_id_to_bpy.items():
+                    if target_id in name or name in target_id:
+                        return o
+            return obj
+
+        bpy_obj = _find_bpy(gt_id)
         if bpy_obj is None:
             print(f"[truncation_filter] WARN: bpy object not found for gt_id={gt_id!r}, skip")
-            # Treat as passed (conservative: don't filter objects we can't evaluate)
-            obj_results.append(
-                {
-                    "gt_id": gt_id,
-                    "actual_pixels": actual_pixels,
-                    "projected_pixels": None,
-                    "truncation_ratio": None,
-                    "passed": True,
-                    "note": "bpy_object_not_found",
-                }
-            )
+            obj_results.append({
+                "gt_id": gt_id, "actual_pixels": actual_pixels,
+                "truncation_ratio": None, "near_edge": near_edge,
+                "passed": True, "note": "bpy_object_not_found",
+            })
             continue
 
         projected, total_tris, skipped_tris = _compute_projected_pixels(
-            bpy_obj, view_mat, fx, fy, cx, cy
+            bpy_obj, view_mat, fx, fy, cx, cy, render_w, render_h
         )
+
+        # Merge mattress projection for beds
+        mattress_bpy_obj = _find_bpy(mattress_gt_id) if mattress_gt_id else None
+        if mattress_bpy_obj is not None:
+            m_proj, m_total, m_skip = _compute_projected_pixels(
+                mattress_bpy_obj, view_mat, fx, fy, cx, cy, render_w, render_h
+            )
+            projected += m_proj
+            total_tris += m_total
+            skipped_tris += m_skip
 
         if skipped_tris > 0:
-            behind_cam_records.append(
-                {
-                    "gt_id": gt_id,
-                    "total_tris": total_tris,
-                    "skipped_tris": skipped_tris,
-                    "skipped_ratio": round(skipped_tris / max(total_tris, 1), 4),
-                }
-            )
+            behind_cam_records.append({
+                "gt_id": gt_id,
+                "total_tris": total_tris,
+                "skipped_tris": skipped_tris,
+                "skipped_ratio": round(skipped_tris / max(total_tris, 1), 4),
+            })
 
         if projected == 0:
-            # Entire mesh behind camera or degenerate — conservative pass
-            obj_results.append(
-                {
-                    "gt_id": gt_id,
-                    "actual_pixels": actual_pixels,
-                    "projected_pixels": 0,
-                    "truncation_ratio": None,
-                    "passed": True,
-                    "note": "projected_pixels_zero",
-                }
-            )
+            obj_results.append({
+                "gt_id": gt_id, "actual_pixels": actual_pixels,
+                "truncation_ratio": None, "near_edge": near_edge,
+                "passed": True, "note": "projected_pixels_zero",
+            })
             continue
 
-        ratio = actual_pixels / projected
-        passed = ratio >= TRUNCATION_RATIO_MIN
+        truncation_ratio = round(actual_pixels / projected, 4)
+        rescued = (actual_pixels / img_total_pixels) >= OCCUPANCY_MIN
+        passed = (not near_edge) or (truncation_ratio >= TRUNCATION_RATIO_MIN) or rescued
 
-        obj_results.append(
-            {
-                "gt_id": gt_id,
-                "actual_pixels": actual_pixels,
-                "projected_pixels": projected,
-                "truncation_ratio": round(ratio, 4),
-                "passed": passed,
-            }
-        )
+        obj_results.append({
+            "gt_id": gt_id,
+            "actual_pixels": actual_pixels,
+            "truncation_ratio": truncation_ratio,
+            "near_edge": near_edge,
+            "passed": passed,
+        })
         print(
-            f"[truncation_filter] {gt_id}: actual={actual_pixels} projected={projected} "
-            f"ratio={ratio:.3f} passed={passed}"
+            f"[truncation_filter] {gt_id}: actual_pixels={actual_pixels} "
+            f"truncation_ratio={truncation_ratio} near_edge={near_edge} "
+            f"rescued={rescued if (near_edge and truncation_ratio < TRUNCATION_RATIO_MIN) else '-'} "
+            f"passed={passed}"
         )
 
     result["computed"] = True
@@ -364,16 +338,10 @@ def compute_truncation(
 # ---------------------------------------------------------------------------
 
 def _cli_main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Filter 3: truncation ratio via mesh rasterization (bpy subprocess)."
-    )
-    parser.add_argument("--blend", required=True, help="Path to scene.blend")
-    parser.add_argument(
-        "--candidates-json",
-        required=True,
-        help="JSON file with {scene_id, objects:[{gt_id, actual_pixels}]}",
-    )
-    parser.add_argument("--out-json", required=True, help="Output result JSON path")
+    parser = argparse.ArgumentParser(description="Filter 3: truncation ratio via mesh rasterization.")
+    parser.add_argument("--blend", required=True)
+    parser.add_argument("--candidates-json", required=True)
+    parser.add_argument("--out-json", required=True)
     args = parser.parse_args()
 
     import bpy
@@ -385,12 +353,14 @@ def _cli_main() -> int:
     with open(args.candidates_json, encoding="utf-8") as f:
         candidates_data = json.load(f)
 
-    scene_id = candidates_data.get("scene_id", "")
-    candidates = candidates_data.get("objects", [])
-    blend_dir = os.path.dirname(abs_blend)
-
-    result = compute_truncation(blend_dir, candidates)
-    result["scene_id"] = scene_id
+    render_size = candidates_data.get("render_size", [1280, 720])
+    result = compute_truncation(
+        os.path.dirname(abs_blend),
+        candidates_data.get("objects", []),
+        int(render_size[0]),
+        int(render_size[1]),
+    )
+    result["scene_id"] = candidates_data.get("scene_id", "")
 
     with open(args.out_json, "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2, ensure_ascii=False)

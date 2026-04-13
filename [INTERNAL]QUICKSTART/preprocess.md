@@ -25,9 +25,8 @@ python inview.py --scenes-root /path/to/scenes_parent [--workers N] [--skip-if-e
 
 ## 目录要建在哪里？
 
-- **`--scenes-root`** 指向**你自己选的批处理根目录**即可（自定义路径完全支持），只要其下是一层 **`<scene_id>/scene.blend`**，且同目录有所需 **`GT.json`**、**`metadata.json`**、**`instance_segmentation.png`**。
-- 常见做法：对 **`data/scenes_raw/<room_folder>`** 或 **`INFINIGEN/.../SCENES_FILTERED/<room_folder>`** 执行上述两步（路径以你本机为准）。
-- **注意**：**`inview.py`** 当前只枚举「子目录 + `scene.blend`」，**没有**「`scenes-root/scene.blend` 单文件」回退；若只有单个 blend，请放在 **`some_root/my_scene_id/scene.blend`**。
+- **`--scenes-root`** 指向批处理根即可。`filter_scenes` / `inview` 会按 **`preprocess_lib/scene_discovery`**：优先 **`<root>/<scene_id>/scene.blend`**，若无则 **`<root>/<分组>/<scene_id>/scene.blend`**，再 **`root/scene.blend`**。同目录需 **`GT.json`**、**`metadata.json`**、**`instance_segmentation.png`**等（见主 README）。
+- 常见做法：`data/scenes_raw/...`、`INFINIGEN/...` 下按扁平或「房型一层」组织均可（路径以你本机为准）。**超过两层**嵌套不会自动挖，请把 **`--scenes-root`** 上移一层或整理目录。
 
 ## 历史说明
 

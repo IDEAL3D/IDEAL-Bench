@@ -24,19 +24,24 @@ INSTANCE_SEGMENTATION_PNG = "instance_segmentation.png"
 METADATA_JSON = "metadata.json"
 
 # ---------------------------------------------------------------------------
-# inview.py filter thresholds (second-stage preprocessing)
+# filter_inview.py filter thresholds (second-stage preprocessing)
 # ---------------------------------------------------------------------------
 
 # Filter 2: Aspect Ratio — max(Δx/Δy, Δy/Δx) of the object's 2D bounding box
-# in instance map pixel space.  Objects with extreme perspective distortion
+# in instance map pixel space. Objects with extreme perspective distortion
 # (e.g. a shelf seen nearly edge-on) will have a very high ratio.
-# Range to test: 10–15.  Change here and re-run inview.py.
-ASPECT_RATIO_MAX: float = 10.0
+ASPECT_RATIO_MAX: float = 12.0
 
 # Filter 3: Truncation — ratio of actual instance-map pixels (occluded) to
 # theoretically projected pixels (mesh silhouette, no occlusion, unbounded).
-# Objects below this threshold are heavily truncated at the camera edge.
-TRUNCATION_RATIO_MIN: float = 0.25
+# An object is filtered only when ALL THREE hold:
+#   (a) its instance-map pixel centroid is within EDGE_CENTROID_MARGIN of any image border, AND
+#   (b) truncation_ratio < TRUNCATION_RATIO_MIN, AND
+#   (c) actual_pixels / image_total_pixels < OCCUPANCY_MIN  (rescue policy:
+#       guards against near-camera depth ≈ 0 inflating projected_pixels).
+TRUNCATION_RATIO_MIN: float = 0.2
+EDGE_CENTROID_MARGIN: float = 0.125  # 1/8 — fraction of image width/height
+OCCUPANCY_MIN: float = 0.03          # 3% of image pixels — rescue threshold
 
-# inview.py batch log filename (written alongside objects_in_view.json in scenes-root)
+# filter_inview.py batch log filename (written under --scenes-root)
 INVIEW_BATCH_LOG_JSONL = "inview_batch.jsonl"

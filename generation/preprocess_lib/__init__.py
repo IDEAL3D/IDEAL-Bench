@@ -1,1 +1,1 @@
-"""Scene helpers: ``build_inview`` (``build_instance_seg_view_payload``, ``build_inview_with_filters``), ``extract_inview``, ``check_overlap``, ``truncation_filter`` (bpy 子进程，供 ``inview.py`` F3), ``defaults``; shared logic in ``generation_common``; ``GT.json`` in ``generate_lib.extract_gt``."""
+"""Scene helpers: ``build_inview``, ``extract_inview``, ``check_overlap``, ``truncation_filter``, ``scene_discovery``, ``defaults``; shared logic in ``generation_common``; ``GT.json`` in ``generate_lib.extract_gt``."""

@@ -1,6 +1,6 @@
 # `generation/`：生成与镜内筛选
 
-**阶段关系**：先 **`filter_scenes.py`（阶段 1）**，再 **`inview.py`（阶段 2）**。二者都通过 **`--scenes-root`** 指向同一批场景父目录；目录布局须为 **一层子目录**，每场景一个文件夹（见下表「目录约定」）。
+**阶段关系**：先 **`filter_scenes.py`（阶段 1）**，再 **`inview.py`（阶段 2）**。二者都通过 **`--scenes-root`** 指向批处理根目录；发现规则见 **`preprocess_lib/scene_discovery`**（扁平一层或「房型/分组」下再一层场景目录，见「目录约定」）。
 
 | 入口 | 库 | 作用 |
 |------|-----|------|
@@ -10,9 +10,9 @@
 
 **目录约定（阶段 1 / 2 一致）**
 
-- **推荐**：`<scenes-root>/<scene_id>/scene.blend`，且同目录含 **`GT.json`**、**`metadata.json`**（含 `instance_map.object_index_map`）、**`instance_segmentation.png`**。
-- **`--scenes-root` 可为任意绝对/相对路径**（自定义数据集根目录即可）；脚本只扫描该路径下**一层**子目录，并跳过 `manifests`、`invalid`、点目录等（与 `filter_scenes` 的跳过集合对齐；**注意**：`inview.py` 当前**没有**「仅根目录单个 `scene.blend`」的回退逻辑，若你的数据是「扁平单文件」布局，请把每个场景放在自己的子文件夹里，或先用与 `filter_scenes` 相同的目录结构）。
-- 若场景按房型分子目录（如 `…/bathroom/bathroom_s123/…`），应对 **`bathroom`** 这一层执行一次命令，而不是仓库根。
+- **推荐**：每个场景目录含 **`scene.blend`**、**`GT.json`**、**`metadata.json`**（含 `instance_map.object_index_map`）、**`instance_segmentation.png`**。
+- **布局（自动二选一，同一 `scenes-root`）**：先试 **`<scenes-root>/<scene_id>/scene.blend`**；若根下没有这种子目录，再试 **`<scenes-root>/<房型或分组>/<scene_id>/scene.blend`**（多一层）；若仍无，再试 **`<scenes-root>/scene.blend`**。CSV / JSONL / `invalid/` 仍写在 **`scenes-root`** 下。
+- **`--scenes-root` 可为任意路径**。更深层级（如三层）不会继续递归；可将 **`--scenes-root`** 指到中间那一层，或整理目录。
 
 **依赖与约定**
 

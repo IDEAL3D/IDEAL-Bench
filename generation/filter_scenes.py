@@ -3,8 +3,9 @@
 Stage-1 scene filter: keep scenes with valid in-view semantics (``objects_in_view``-compatible) and no
 furniture mesh overlap.
 
-**CLI:** ``--scenes-root`` is required (no default). Discovery is **one level deep** only:
-``<scenes-root>/<scene_id>/scene.blend``. Point at a room-type batch folder for large corpora.
+**CLI:** ``--scenes-root`` is required (no default). Discovery tries **flat**
+``<root>/<scene_id>/scene.blend`` first; if none, **one room-type (or group) level**
+``<root>/<group>/<scene_id>/scene.blend``; else ``<root>/scene.blend``. Logs and ``invalid/`` stay under ``root``.
 
 **Pipeline:** (1) ``build_inview`` — reject on missing inputs / broken instance–metadata–GT chain;
 (2) reject empty in-view (``objects_in_view_count == 0``); (3) Blender ``check_overlap`` — reject
@@ -48,6 +49,7 @@ from preprocess_lib.build_inview import (
     MissingInViewInfoError,
     build_instance_seg_view_payload,
 )
+from preprocess_lib.scene_discovery import discover_scene_blend_paths
 
 
 def _find_bpy_python() -> str:
@@ -62,38 +64,6 @@ def _find_bpy_python() -> str:
     if os.path.isfile(candidate):
         return candidate
     return sys.executable
-
-
-def _raw_skip_names() -> frozenset[str]:
-    return frozenset({"manifests", "DEPRECATED", "0_DEPRECATED", "README.txt", ".DS_Store"})
-
-
-def discover_scene_blend_paths(scenes_root: str) -> List[str]:
-    """``<root>/<scene_id>/scene.blend`` only (one level); or ``<root>/scene.blend`` if no subdir hits.
-
-    Skips ``invalid``, manifests, dot dirs. For nested layouts (e.g. ``root/cat/id/``), point
-    ``--scenes-root`` at the category folder so each run stays a manageable batch.
-    """
-    out: List[str] = []
-    root = os.path.abspath(os.path.expanduser(scenes_root))
-    if not os.path.isdir(root):
-        return out
-    skip = _raw_skip_names() | {FILTER_INVALID_SUBDIR}
-    for name in sorted(os.listdir(root)):
-        if name in skip or name.startswith("."):
-            continue
-        d = os.path.join(root, name)
-        if not os.path.isdir(d):
-            continue
-        bp = os.path.join(d, "scene.blend")
-        if os.path.isfile(bp):
-            out.append(bp)
-    if out:
-        return out
-    direct = os.path.join(root, "scene.blend")
-    if os.path.isfile(direct):
-        return [direct]
-    return []
 
 
 def _run_overlap_subprocess(
