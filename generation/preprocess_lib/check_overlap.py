@@ -1,14 +1,21 @@
 """
-Pairwise overlap estimate for top-level furniture under ``unique_assets``; ``extract_info`` merges the summary into ``objects_in_view.json`` (legacy pipeline used a standalone ``furniture_overlap.json`` or an ``info.json`` block).
+Pairwise overlap estimate for top-level furniture under ``unique_assets``; ``extract_inview`` merges the summary into ``objects_in_view.json`` (legacy pipeline used a standalone ``furniture_overlap.json`` or an ``info.json`` block).
 
-Uses asset enumeration and AABB from ``extract_camview``; invoked by ``extract_info`` as ``compute_furniture_overlap``.
+Uses asset enumeration from ``generation_common.asset_rules`` and AABB from ``generation_common.scene_geometry``; invoked by ``extract_inview`` as ``compute_furniture_overlap``.
+
+**Subprocess CLI** (Blender Python only), for ``filter_scenes.py``::
+
+ cd IDEAL/generation && <bpy_python> -m preprocess_lib.check_overlap --filter-write-json <scene.blend> <out.json>
+
+Writes ``{"pair_count": int, "computed": bool, "error": str|null}`` to ``out.json``.
 """
 
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
-from .extract_camview import collect_assets, combined_aabb, factory_to_category
+from generation_common.asset_rules import collect_assets, factory_to_category
+from generation_common.scene_geometry import combined_aabb
 
 # Pairwise overlap: world-axis-aligned voxel grid; cap voxels per pair for runtime
 OVERLAP_MAX_VOXELS_PER_PAIR = 120_000
@@ -287,7 +294,7 @@ def _boolean_intersection_volume_m3(root_a, root_b) -> Optional[float]:
             return None
         return vol
     except Exception as ex:
-        print(f"[overlap_check] boolean overlap skipped: {ex}")
+        print(f"[check_overlap] boolean overlap skipped: {ex}")
         return None
     finally:
         # Do not hold Mesh RNA across modifier/remove then access .name (ReferenceError).
@@ -511,7 +518,7 @@ def _compute_furniture_overlap_impl() -> Dict[str, Any]:
     pairs_out.sort(key=lambda p: -p["overlap_volume_m3"])
 
     print(
-        f"[overlap_check] furniture_overlap: {len(pairs_out)} pair(s), "
+        f"[check_overlap] furniture_overlap: {len(pairs_out)} pair(s), "
         f"total_volume≈{total_vol:.6f} m³ (AABB → boolean; fallback voxel/proximity)"
     )
 
@@ -539,3 +546,85 @@ def _compute_furniture_overlap_impl() -> Dict[str, Any]:
             "boolean failure uses voxel then proximity"
         ),
     }
+
+
+def _filter_scenes_cli() -> int:
+    """``python -m preprocess_lib.check_overlap --filter-write-json <blend> <out.json>`` (requires ``bpy``)."""
+    import json
+    import os
+    import sys
+
+    av = sys.argv
+    if len(av) < 4 or av[1] != "--filter-write-json":
+        print(
+            "usage: python -m preprocess_lib.check_overlap --filter-write-json <scene.blend> <out.json>",
+            file=sys.stderr,
+        )
+        return 2
+
+    blend_path = os.path.abspath(os.path.expanduser(av[2]))
+    out_path = os.path.abspath(os.path.expanduser(av[3]))
+    payload: Dict[str, Any] = {"pair_count": None, "computed": False, "error": None}
+
+    if not os.path.isfile(blend_path):
+        payload["error"] = f"missing_blend:{blend_path}"
+        _overlap_cli_write_json(out_path, payload)
+        return 1
+
+    try:
+        import bpy
+    except ImportError:
+        payload["error"] = "no_bpy"
+        _overlap_cli_write_json(out_path, payload)
+        return 1
+
+    try:
+        bpy.ops.wm.open_mainfile(filepath=blend_path)
+    except Exception as e:
+        payload["error"] = f"open_blend:{type(e).__name__}:{e}"
+        _overlap_cli_write_json(out_path, payload)
+        return 1
+
+    try:
+        fo = compute_furniture_overlap()
+        payload["computed"] = bool(fo.get("computed"))
+        payload["pair_count"] = int(fo.get("pair_count", 0) or 0)
+        pairs_raw = fo.get("pairs") if isinstance(fo.get("pairs"), list) else []
+        overlap_pair_strings: List[str] = []
+        for p in pairs_raw:
+            if not isinstance(p, dict):
+                continue
+            a, b = p.get("a"), p.get("b")
+            if a is not None and b is not None:
+                overlap_pair_strings.append(f"{a}|{b}")
+        payload["overlap_pair_strings"] = overlap_pair_strings
+        vol = fo.get("overlap_volume_m3_total")
+        if vol is not None:
+            try:
+                payload["overlap_volume_m3_total"] = float(vol)
+            except (TypeError, ValueError):
+                payload["overlap_volume_m3_total"] = None
+        else:
+            payload["overlap_volume_m3_total"] = None
+    except Exception as e:
+        payload["error"] = f"overlap:{type(e).__name__}:{e}"
+        _overlap_cli_write_json(out_path, payload)
+        return 1
+
+    _overlap_cli_write_json(out_path, payload)
+    return 0
+
+
+def _overlap_cli_write_json(path: str, payload: Dict[str, Any]) -> None:
+    import json
+    import os
+
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+
+
+if __name__ == "__main__":
+    raise SystemExit(_filter_scenes_cli())

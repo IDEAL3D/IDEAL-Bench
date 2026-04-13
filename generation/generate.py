@@ -2,7 +2,7 @@
 """
 Batch driver for rectangular single-room scenes: delegates to ``generate_lib/core.py``.
 Room types are canonical ids in ``configs.constant.ROOM_TYPES`` (10 types). Each scene is finalized to
-``scene.blend``, ``color.png``, uint16 ``instance_segmentation.png``, and ``metadata.json``.
+``scene.blend``, ``color.png``, uint16 ``instance_segmentation.png``, ``metadata.json``, and ``GT.json``.
 
 Always writes under ``IDEAL/data/scenes_raw`` (see ``configs.data_paths.SCENES_RAW_ROOT``) and updates ``data/scenes_raw/manifests/``
 (``generation_batches.jsonl``, per-room ``*_scenes.csv``). Non-box room layouts are deprecated;
@@ -15,7 +15,7 @@ This entry point always runs coarse+render with denoising; for single-stage runs
 
 Example (from ``IDEAL/generation``)::
 
-    python generate.py --room-type classroom --num-scenes 12 --gpu auto
+    python generate.py --room-type classroom --gpu auto --num-scenes 20
 
 Long-running jobs, tmux, manifests, and ``core.py`` notes: ``../[INTERNAL]QUICKSTART/generate.md``.
 """

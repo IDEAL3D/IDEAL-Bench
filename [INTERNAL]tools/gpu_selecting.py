@@ -2,7 +2,7 @@
 """
 Print or export a ``CUDA_VISIBLE_DEVICES`` value (auto pick or explicit).
 
-Uses ``configs.gpu_select.resolve_cuda_visible_devices`` (same logic as ``generate.py`` / ``preprocess.py``).
+Uses ``configs.gpu_select.resolve_cuda_visible_devices`` (same logic as ``generate.py`` / ``filter_scenes.py``).
 
 Examples (from IDEAL repo root; quote paths because of ``[`` ``]``)::
 

@@ -37,7 +37,8 @@
 | 组件 | 路径 | 说明 |
 |------|------|------|
 | 合成入口 | `generation/generate.py` | 调用 `generate_lib/`（例如 `core.py`）。 |
-| 预处理入口 | `generation/preprocess.py` | 调用 `preprocess_lib/`，基于已有 `scene.blend` 产出真值、`objects_in_view` 等。 |
+| 阶段 1 筛选（重叠） | `generation/filter_scenes.py` | 镜内语义 + `check_overlap`；无效 → `invalid/`。 |
+| 阶段 2 镜内过滤 | `generation/filter_inview.py` | F1/F2 + `truncation_filter` 子进程；重写 `objects_in_view.json`，写 `inview_batch.jsonl`。 |
 
 上述两条管线在代码结构上相互独立，无嵌套调用关系。Infinigen 子进程在子模块目录 **`infinigen-ideal/`** 内通过 `python -m infinigen_examples.single` 等形式启动。
 
@@ -49,7 +50,7 @@
 
 ### 进一步阅读
 
-- 命令行参数与模块职责：`generation/README.md`、`generation/generate_lib/README.md`。
+- 合成与预处理概要：[`generation/README.md`](../generation/README.md)；入口脚本另有 `generation/generate.py`、`generation/filter_scenes.py`、`generation/filter_inview.py`（细节见各文件 docstring）。
 - 内部快速笔记（随仓库跟踪，**不对外发布**，见下文「含 `[INTERNAL]` 的目录」）：`[INTERNAL]QUICKSTART/`（如 `generate.md`、`preprocess.md`）与本文件 `README_CN.md`。
 - `metadata.json` 字段定义：[`docs/METADATA_SCHEMA.md`](../docs/METADATA_SCHEMA.md)。
 
@@ -62,14 +63,14 @@
 | 组件 | 依赖说明 |
 |------|----------|
 | `inference/infer.py` | 上述两种安装方式均包含 `google-genai`、`openai`。 |
-| `reconstruction/` | 需要 `bpy` 与 `mathutils`（全量依赖文件中已包含 `mathutils`；精简安装中单独列出）。默认 `--runner bpy`；亦可使用 `--runner blender` 并设置环境变量 **`BLENDER_EXECUTABLE`**。 |
-| `generation/`（含 `generate.py`、`preprocess.py` 及 `generate_lib/`、`preprocess_lib/`） | 仅适用于 **全量** `requirements.txt`；依赖 Infinigen 侧 Python 与科学计算相关包。 |
+| `reconstruction/` | 需要 `bpy` 与 `mathutils`（全量依赖文件中已包含 `mathutils`；精简安装中单独列出）。渲染子进程固定为当前解释器 + `bpy_scripts/render.py`，不查找系统 `blender` 可执行文件。 |
+| `generation/`（含 `generate.py`、`filter_scenes.py` 及 `generate_lib/`、`preprocess_lib/`） | 仅适用于 **全量** `requirements.txt`；依赖 Infinigen 侧 Python 与科学计算相关包。 |
 
 ---
 
-## 重建阶段对 Blender 的调用方式
+## 重建阶段对 `bpy` 的调用方式
 
-重建默认使用 `--runner bpy`：通过当前 Python 环境中的 **`bpy`** 加载 `.blend` 并渲染，与 InfiniGen 侧常见用法一致。**不强制**安装带图形界面的 Blender 应用程序，也**不强制**将 `blender` 可执行文件加入 `PATH`。
+重建通过当前 Python 环境中的 **`bpy`**（`pip`/conda 安装的模块）加载 `.blend` 并渲染，与 InfiniGen 侧常见用法一致。**不**再提供独立 `blender` 可执行文件作为备选后端。
 
 ---
 
@@ -87,7 +88,7 @@
 | API 与本地配置 | `[INTERNAL]api/check_api.py`：连通性检测；密钥等放在 `[INTERNAL]api/secrets/`（该目录下除 `.gitkeep` 外由 `.gitignore` 排除，见下文）。 |
 | 内部维护脚本 | `[INTERNAL]tools/`：像素统计、`gpu_selecting` 等内部工具（非主评测链路；见下文「含 `[INTERNAL]` 的目录」）。 |
 
-**矩形单房间合成与预处理**：由 `generation/generate.py`（经 `generate_lib/core.py`）实现合成；由 `generation/preprocess.py`（`preprocess_lib/`）从已有 `scene.blend` 产出真值与 `objects_in_view` 等，详见 `generation/README.md` 与 `generate_lib/README.md`。二者均依赖子模块 **`infinigen-ideal/`**。合成结果默认落盘位置见上文「合成产物的默认输出位置」。纳入评测前，请将场景 **复制或同步** 至 `data/scenes/`、`data/scenes2test/` 等约定路径。
+**矩形单房间合成与镜内 JSON**：由 `generation/generate.py`（经 `generate_lib/core.py`）实现合成并收尾写出 **`GT.json`** 等；**`filter_scenes.py`**（阶段 1）与 **`filter_inview.py`**（阶段 2）与 **`preprocess_lib/`**（`build_inview`、`check_overlap`、`truncation_filter` 等）配合完成镜内与重叠相关流程，详见 **`generation/README.md`**、**`[INTERNAL]QUICKSTART/preprocess.md`**、`docs/PREPROCESS_DESIGN.md`。二者均依赖子模块 **`infinigen-ideal/`**。合成结果默认落盘位置见上文「合成产物的默认输出位置」。纳入评测前，请将场景 **复制或同步** 至 `data/scenes/`、`data/scenes2test/` 等约定路径。
 
 ---
 
@@ -130,21 +131,23 @@ IDEAL/
 ├── generation/
 │   ├── README.md
 │   ├── generate.py               # 批量合成入口 → 子进程 generate_lib.core；写 manifests
-│   ├── preprocess.py               # 预处理 CLI → preprocess_lib.cli
+│   ├── filter_scenes.py          # 阶段1：镜内语义 + 重叠；无效 → invalid/
+│   ├── filter_inview.py          # 阶段2：F1/F2/F3 后写 objects_in_view.json；inview_batch.jsonl
 │   ├── generate_lib/
-│   │   ├── core.py               # Infinigen 子进程、coarse/render、四件套收尾
-│   │   ├── metadata_builder.py   # 从 scene.blend + Objects*.json 生成 metadata.json
-│   │   ├── blender_dump_metadata.py  # 仅在 Blender 内运行，导出相机片段 JSON
+│   │   ├── core.py               # Infinigen 子进程、coarse/render、五件套收尾
+│   │   ├── build_metadata.py     # 拼 metadata.json
+│   │   ├── extract_metadata.py   # Blender 内导出 render/environment 片段
+│   │   ├── extract_gt.py         # 写 GT.json（房间度量等）
 │   │   └── __init__.py
+│   ├── generation_common/        # 生成与预处理共用
+│   │   ├── scene_geometry.py     # AABB、地板/天花、射线、房高
+│   │   └── asset_rules.py        # 集合排除、collect_assets、相机/房间回退、scene_id
 │   └── preprocess_lib/
-│       ├── cli.py                # argparse 与 --final / 批处理等模式分发
-│       ├── core.py               # 批处理子进程循环、manifest、RAW→SCENES2TEST 同步
-│       ├── pipeline.py           # 单场景 bpy：GT.json、objects_in_view、npz 清理
-│       ├── defaults.py           # BPY 解释器路径等默认常量
-│       ├── extract_gt.py         # 写 GT.json（房间度量等）
-│       ├── extract_info.py       # objects_in_view.json；合并家具重叠摘要
-│       ├── extract_camview.py    # 实例分割可见性、镜内类别与几何辅助
-│       ├── overlap_check.py      # 家具两两重叠估计（由 extract_info 调用）
+│       ├── defaults.py           # 阈值、文件名常量（filter_inview / filter_scenes）
+│       ├── build_inview.py       # 镜内列表；F1+F2（filter_scenes / filter_inview 共用）
+│       ├── extract_inview.py     # Blender 内写 objects_in_view + 重叠摘要（可选路径）
+│       ├── check_overlap.py      # 家具重叠（bpy；filter_scenes 子进程 -m）
+│       ├── truncation_filter.py  # F3 截断（bpy；filter_inview 子进程 -m）
 │       └── __init__.py
 ├── inference/
 │   ├── infer.py                  # VLM CLI；预测写入 result/{protocol}/{scene_id}/
@@ -160,9 +163,9 @@ IDEAL/
 │   ├── match.py                  # 按类别的预测与场景物体队列匹配
 │   ├── runtime.py                # 扫描预测文件、路径解析等运行时辅助
 │   ├── __init__.py
-│   └── blender_scripts/
+│   └── bpy_scripts/
 │       ├── .gitkeep
-│       └── render.py             # Blender：读 *_render.json，另存 .blend 并渲染 .png
+│       └── render.py             # bpy：读 *_render.json，另存 .blend 并渲染 .png
 ├── benchmarks/
 │   ├── evaluation/.gitkeep       # 预留：指标脚本
 │   ├── protocols/.gitkeep        # 预留：评测协议文稿
@@ -209,7 +212,7 @@ IDEAL/
 
 **入口**：`reconstruction/reconstruct.py`。
 
-**阶段顺序**：`compose.py`（内部通过 `match.py` 完成类别队列匹配；将预测几何写回并与 `GT.json` 合并）→ 在同目录生成 **`{model_id}_render.json`** → `blender_scripts/render.py` 读取该 JSON，另存 **`{model_id}.blend`** 并渲染 **`{model_id}.png`**。源场景 **`scene.blend`** 默认路径为 **`data/scenes2test/{scene_id}/scene.blend`**（不覆盖源文件）。
+**阶段顺序**：`compose.py`（内部通过 `match.py` 完成类别队列匹配；将预测几何写回并与 `GT.json` 合并）→ 在同目录生成 **`{model_id}_render.json`** → `bpy_scripts/render.py` 读取该 JSON，另存 **`{model_id}.blend`** 并渲染 **`{model_id}.png`**。源场景 **`scene.blend`** 默认路径为 **`data/scenes2test/{scene_id}/scene.blend`**（不覆盖源文件）。
 
 **批处理**（在仓库根 **`IDEAL/`** 下执行；按「场景 × 模型」顺序处理；任务总数会输出至标准错误流）：
 
@@ -233,13 +236,13 @@ python reconstruction/reconstruct.py --task-dir result/camera --dry-run
 
 相对路径首先相对于 **当前工作目录** 解析；若无法解析，则相对于 **仓库根 `IDEAL/`** 解析。
 
-**Blender 后端**：默认 `--runner bpy`；可通过环境变量 **`IDEAL_RECON_RUNNER`** 覆盖。渲染使用 **`scene.blend` 中当前活动相机** 及文件内渲染设置。
+**渲染后端**：固定为当前解释器的 **`bpy`**（运行 `render.py` 子进程前会检查 `import bpy`）。渲染使用 **`scene.blend` 中当前活动相机** 及文件内渲染设置。
 
 ### 重建相关模块职责
 
 - **`match.py`**：仅完成 **按类别的队列匹配**：基于 `info.objects` 建队，逐条与预测对应；冗余预测生成 `placeholder_*`；未占用的槽位几何置为 `null`。输出为预测与场景中物体的配对列表，**不写磁盘**。
 - **`compose.py`**：对配对结果执行 `apply_object_overlay`（写回预测几何），再经 `merge_gt_with_info_layer` 与完整 **`GT.json`** 合并，写出 **`{model_id}_render.json`**。
-- **`render.py`（Blender）**：依据 **`PREPROCESS_DESIGN.md`** 第 3 节将 JSON 写回场景对象（`protocol=floor` 时涉及 `position`、`dimensions`、`rotation_yaw` 等；空物体尺寸由子树网格世界包围盒估算）。**`protocol=camera`** 时不写回几何。
+- **`render.py`（`bpy`）**：依据 **`PREPROCESS_DESIGN.md`** 第 3 节将 JSON 写回场景对象（`protocol=floor` 时涉及 `position`、`dimensions`、`rotation_yaw` 等；空物体尺寸由子树网格世界包围盒估算）。**`protocol=camera`** 时不写回几何。
 
 ### API 密钥与本地配置（`[INTERNAL]api/`）
 

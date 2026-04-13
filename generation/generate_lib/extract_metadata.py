@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-Blender batch helper: write render + environment JSON from the currently opened scene.
-Used by ``metadata_builder.resolve_scene_metadata`` / ``build_metadata`` via a headless Blender subprocess.
+Write render + environment JSON from the **currently opened** ``bpy`` scene (same data shape as
+``build_metadata`` expects). ``build_metadata.resolve_scene_metadata`` reads metadata in-process
+via ``bpy`` only; this script remains useful for **manual** debugging or ad-hoc dumps.
 
-Usage::
+Usage (requires ``bpy``; ``scene.blend`` must already be open in the current session, e.g. run from
+the same conda env as generation after ``bpy.ops.wm.open_mainfile``)::
 
-    blender -b /path/to/scene.blend --python blender_dump_metadata.py -- <out.json> <room_type>
+    python extract_metadata.py -- <out.json> [room_type]
 
 Output JSON: ``{"render": {...}, "environment": {...}}``. ``render`` contains only base fields
 (resolution, camera_location, camera_rotation_euler, focal_length_mm, sensor_width); the caller
@@ -142,7 +144,7 @@ def main() -> None:
         argv = []
     if len(argv) < 1:
         print(
-            "Usage: blender -b scene.blend --python blender_dump_metadata.py -- <out.json> [room_type]",
+            "Usage: python extract_metadata.py -- <out.json> [room_type]  (requires bpy; blend open)",
             file=sys.stderr,
         )
         sys.exit(1)

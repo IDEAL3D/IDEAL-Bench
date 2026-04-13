@@ -1,1 +1,1 @@
-"""Infinigen scene preprocessing: ``cli``, ``core``, ``pipeline``, ``extract_gt``, ``extract_info``, ``extract_camview``, ``overlap_check``."""
+"""Scene helpers: ``build_inview``, ``extract_inview``, ``check_overlap``, ``truncation_filter``, ``scene_discovery``, ``defaults``; shared logic in ``generation_common``; ``GT.json`` in ``generate_lib.extract_gt``."""

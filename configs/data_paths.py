@@ -4,7 +4,7 @@
 - **Infinigen code**: ``INFINIGEN_SUBMODULE_ROOT`` (``infinigen-ideal/``); subprocess cwd for ``infinigen_examples``.
 - **Generated scenes (canonical)**: ``SCENES_RAW_ROOT`` == ``SCENES_RAW_LOCAL`` → ``IDEAL/data/scenes_raw``
   (manifests live in ``data/scenes_raw/manifests/``). Preprocess dev sync may still use a sibling ``INFINIGEN/``
-  tree for ``SCENES2TEST`` / ``SCENES_PROCESSED``; see ``generation/preprocess_lib/core.py``.
+  tree for ``SCENES2TEST`` / ``SCENES_PROCESSED`` (sibling ``INFINIGEN/`` checkout).
 
 Git: ``data/`` is tracked via ``data/.gitkeep``; other contents under ``data/`` are ignored — root ``.gitignore``.
 """

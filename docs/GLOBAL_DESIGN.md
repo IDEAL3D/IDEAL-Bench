@@ -279,4 +279,4 @@ compose_single_room.solve_small_enabled = False
 | 目录 | 用途 |
 |------|------|
 | **`IDEAL/data/scenes_raw/`** | **`generate.py`** 与 **`generate_lib/core.py`** 的默认场景父目录（`SCENES_RAW_ROOT`；可用 `--scenes-root` 覆盖）。其下 `manifests/`：`generation_batches.jsonl`（批次元数据，含 `status`: `pending_preprocess` / `archived` / `deleted`）与 `{room_type}_scenes.csv`（列：`batch_scene_index`, `batch_id`, `scene_id`）；供预处理与下游数据集使用。 |
-| **`SCENES_PROCESSED/`** | 正式预处理输出（`preprocess.py --final`：从 RAW 拷贝本批再跑预处理）；`manifests/` 见该目录下 `README.txt`。与上两者同级。 |
+| **`SCENES_PROCESSED/`** | 历史/团队约定的已处理场景根目录（曾由已移除的批处理 CLI 从 RAW 同步并写 manifests）；`manifests/` 见该目录下 `README.txt`。与上两者同级。 |

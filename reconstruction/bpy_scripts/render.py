@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-在 Blender 内执行：读取 **compose.py** 已写好的 ``{model_id}_render.json``（pseudo-GT），
+在带 ``bpy`` 的 Python 内执行：读取 **compose.py** 已写好的 ``{model_id}_render.json``（pseudo-GT），
 将参数写回场景副本并渲染 PNG；**不再**合并 GT/cache 或重写 render.json。
 
 参数（``--`` 之后）::
