@@ -1,6 +1,5 @@
 """
-重建流水线的 **runtime** 层：固定 ``result/`` 路径布局、任务发现、以及 ``bpy`` / Blender
-可执行文件的运行环境检查（无 CLI）。
+重建流水线的 **runtime** 层：固定 ``result/`` 路径布局、任务发现、以及 ``bpy`` 导入检查（无 CLI）。
 
 命名说明：与 Go/Rust 等生态中 ``runtime`` 表示「程序运行所需环境与前置条件」的用法一致，
 区别于业务脚本 ``reconstruct.py`` / ``match.py``。
@@ -9,7 +8,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 import sys
 from pathlib import Path
 
@@ -59,7 +57,7 @@ def is_model_prediction_json(path: Path) -> bool:
 
 
 def ensure_bpy_importable() -> None:
-    """--runner bpy 时要求当前环境能 import bpy（与 InfiniGen 相同）。"""
+    """重建 ``render.py`` 子进程前要求当前环境能 ``import bpy``（与 InfiniGen 常用 pip/conda bpy 一致）。"""
     try:
         import importlib.util
 
@@ -67,33 +65,12 @@ def ensure_bpy_importable() -> None:
             raise ImportError("no bpy")
     except ImportError:
         print(
-            "当前解释器无法 import bpy（--runner bpy）。\n"
-            "请安装：pip install 'bpy>=4.2,<5'（见 requirements.txt），或使用与 InfiniGen 相同的 conda 环境。\n"
-            "若已安装完整 Blender 并希望用命令行调用，请加：--runner blender",
+            "当前解释器无法 import bpy。\n"
+            "请安装：pip install 'bpy>=4.2,<5'（见 requirements.txt），或使用已配置好 bpy 的 conda 环境。\n"
+            "重建渲染仅支持该方式，不再查找系统 ``blender`` 可执行文件。",
             file=sys.stderr,
         )
         sys.exit(2)
-
-
-def resolve_blender_executable(cli: str) -> Path:
-    """
-    解析 Blender 可执行文件路径；找不到则打印说明并退出。
-    支持：绝对路径、PATH 中的 ``blender``、环境变量 ``BLENDER_EXECUTABLE`` 传入 ``--blender``。
-    """
-    expanded = os.path.expanduser(cli.strip())
-    p = Path(expanded)
-    if p.is_file() and os.access(p, os.X_OK):
-        return p.resolve()
-    which = shutil.which(expanded)
-    if which:
-        return Path(which)
-    print(
-        f"找不到 Blender 可执行文件: {cli!r}\n"
-        "请任选其一：将 blender 加入 PATH；或设置环境变量 BLENDER_EXECUTABLE 为完整路径；"
-        "或运行: python reconstruction/reconstruct.py --blender /path/to/blender ...",
-        file=sys.stderr,
-    )
-    sys.exit(2)
 
 
 def parse_inference_prediction_file(pred_file: Path) -> tuple[str, str, str, Path]:

@@ -1,16 +1,34 @@
-# `generation/`：生成与预处理
+# Generation and preprocessing (Box single-room)
 
-两条管线**并列**，代码互不嵌套：
+This folder holds **scene synthesis** (`generate.py`, `generate_lib/`) and the **two-stage filter pipeline** for already-rendered scene directories.
 
-| 入口 | 库 | 作用 |
-|------|-----|------|
-| [`generate.py`](generate.py) | [`generate_lib/`](generate_lib/) | Infinigen **矩形单房间**：合成 + 渲染，收尾四文件 |
-| [`preprocess.py`](preprocess.py) | [`preprocess_lib/`](preprocess_lib/) | 对已有 `scene.blend` 产出 GT / `objects_in_view` 等 |
+## Stage 1 — `filter_scenes.py`
 
-**依赖与约定**
+Scene-level gate: in-view semantics (instance map + `GT.json` alignment) and furniture overlap via `python -m preprocess_lib.check_overlap`. Failed scenes move to `<scenes-root>/invalid/`. Reports append under `scenes-root` (see `preprocess_lib/defaults.py` for CSV / JSONL names).
 
-- 路径：`INFINIGEN_SUBMODULE_ROOT`、`SCENES_*` 见 [`../configs/data_paths.py`](../configs/data_paths.py)；房型 canonical 见 [`../configs/constant.py`](../configs/constant.py)（`ROOM_TYPES`）。新场景目录名一般为 `{canonical}_s{seed}`。
-- **如何运行**（参数、tmux、manifests、`core.py` 细节）：[**`../[INTERNAL]QUICKSTART/generate.md`**](../[INTERNAL]QUICKSTART/generate.md)。
-- **生成侧模块关系**（`core` / `metadata_builder` 等）：[`generate_lib/README.md`](generate_lib/README.md)。
-- `metadata.json` 字段约定：[`../docs/METADATA_SCHEMA.md`](../docs/METADATA_SCHEMA.md)。
-- 单房 box 局限：[`../docs/LIMITATION.md`](../docs/LIMITATION.md)。
+```bash
+cd /path/to/IDEAL/generation
+python filter_scenes.py --scenes-root /path/to/scenes_parent [--workers N] [--gpu ...]
+```
+
+## Stage 2 — `filter_inview.py`
+
+Object-level filters (F1 visibility, F2 aspect ratio, F3 truncation in a `bpy` subprocess) rewrite **`objects_in_view.json`** per scene. **`inview_batch.jsonl`** is appended under **`--scenes-root`** (per-scene lines only when something notable happened; run ends with a `batch_summary` record).
+
+```bash
+python filter_inview.py --scenes-root /path/to/scenes_parent [--workers N] [--skip] [--gpu ...]
+```
+
+- **`--skip`**: skip scenes that already have `objects_in_view.json`.
+- **`--workers`**: parallel scenes (thread pool). Each scene still spawns its own F3 `bpy` process; many workers on one GPU can exhaust VRAM — start with **4** and raise (e.g. **8**) only if stable.
+
+## Scene layout
+
+`--scenes-root` is the parent of scene folders containing `scene.blend`. Discovery order: `<root>/<scene_id>/scene.blend`, then `<root>/<group>/<scene_id>/scene.blend`, then `<root>/scene.blend`. See **`preprocess_lib/scene_discovery.py`**.
+
+Thresholds and filenames: **`preprocess_lib/defaults.py`**.
+
+## Further reading
+
+- Internal (Chinese): `[INTERNAL]QUICKSTART/preprocess.md`
+- Design notes: `docs/PREPROCESS_DESIGN.md`

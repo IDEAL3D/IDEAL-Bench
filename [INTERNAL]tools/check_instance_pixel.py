@@ -29,8 +29,8 @@ from preprocess_lib.defaults import (  # noqa: E402
     INSTANCE_SEGMENTATION_PNG,
     METADATA_JSON,
 )
-from preprocess_lib.extract_camview import (  # noqa: E402
-    MissingMetadataInstanceMapError,
+from preprocess_lib.build_inview import (  # noqa: E402
+    MissingInViewInfoError,
     _load_instance_segmentation_u16,
     _load_object_index_map,
 )
@@ -104,7 +104,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         rows = report_scene(
             args.scene_dir, substr=args.substr, min_pixels=args.min_pixels
         )
-    except (FileNotFoundError, MissingMetadataInstanceMapError) as e:
+    except (FileNotFoundError, MissingInViewInfoError) as e:
         print(f"[check_instance_pixel] ERROR: {e}", file=sys.stderr)
         return 1
 

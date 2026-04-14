@@ -37,14 +37,24 @@ python generation/generate.py --batch 'bedroom:100,living-room:100,classroom:50'
 
 ---
 
-## 预处理
+## 筛选（镜内 + 重叠）
 
-对已生成的场景提取 GT 和可见物体信息：
+对已生成且含 `scene.blend` 的批目录运行（在 `generation/` 下）：
 ```bash
-python generation/preprocess.py
+cd generation
+python filter_scenes.py --scenes-root /path/to/your_scenes_parent
 ```
 
-预处理会过滤掉有物体重叠的场景，输出 `GT.json` 和 `objects_in_view.json`，合格场景同步到 `data/scenes2test/`。
+`GT.json` 由生成收尾写出。`filter_scenes.py` 会按镜内语义与家具重叠移动不合格场景至 `invalid/`。
+
+**阶段 2（镜内物体过滤）**：在同一 `--scenes-root` 上运行 `inview.py` 生成/更新 `objects_in_view.json` 与 `inview_batch.jsonl`：
+
+```bash
+cd generation
+python inview.py --scenes-root /path/to/your_scenes_parent
+```
+
+详见 `[INTERNAL]QUICKSTART/preprocess.md` 与 `docs/PREPROCESS_DESIGN.md`。
 
 ---
 

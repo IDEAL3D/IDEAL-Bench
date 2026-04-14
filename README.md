@@ -1,4 +1,4 @@
-# IDEAL: A Synthetic Indoor Dataset for Evaluating and Analysing Layout
+# IDEAL: Indoor Dataset for Evaluating Analysis by 3D Layout Reasoning
 
 <p align="center">
   <a href="[PAPER_URL]">[📄 Paper]</a> &nbsp;|&nbsp;
@@ -90,7 +90,7 @@ python benchmarks/evaluation/evaluate.py --protocol floor
 
 ```
 IDEAL/
-├── generation/          # Scene synthesis and preprocessing scripts
+├── generation/          # Scene synthesis, filtering, and related scripts
 ├── inference/           # VLM inference scripts and system prompts
 ├── reconstruction/      # Layout-to-Blender reconstruction scripts
 ├── benchmarks/          # Evaluation metrics and leaderboard (WIP)
