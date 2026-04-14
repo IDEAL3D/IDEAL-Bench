@@ -1,7 +1,18 @@
 """
-IDEAL 评测指标（几何与空间准确性，2.3.1）
+IDEAL 评测指标（2.3 硬指标）
 
-本文件按“每个指标一个函数”的方式组织，支持如下核心量：
+本文件按“每个指标一个函数”的方式组织，并与文档编号一一对应：
+- 2.2.1 -> metric_position_error_rate
+- 2.2.2 -> metric_bbox_iou
+- 2.2.3 -> metric_rotation_error_rate
+- 2.2.4 -> metric_object_collision_rate
+- 2.2.5 -> metric_out_of_bounds_rate
+- 2.3.1 -> metric_recognition_rate
+- 2.3.2 -> metric_hallucination_rate
+- 2.4.1 -> metric_room_type_accuracy
+- 2.5.1 -> metric_json_failure_rate
+
+支持如下核心量：
 - N: GT 物体总数
 - K: 成功匹配到 GT 的预测物体数（识别成功）
 - M: 幻觉物体数（预测中无法匹配到任何 GT）
@@ -292,7 +303,7 @@ def match_by_category_and_distance(
 
 
 # ------------------------------
-# 指标 1: 位置错误率
+# 2.2.1 指标: 位置错误率
 # ------------------------------
 
 
@@ -357,7 +368,7 @@ def metric_position_error_rate(
 
 
 # ------------------------------
-# 指标 2: BBOX-IoU
+# 2.2.2 指标: BBOX-IoU
 # ------------------------------
 
 
@@ -404,7 +415,7 @@ def metric_bbox_iou(
 
 
 # ------------------------------
-# 指标 3: 旋转错误率（可选）
+# 2.2.3 指标: 旋转错误率（可选）
 # ------------------------------
 
 
@@ -474,7 +485,7 @@ def metric_rotation_error_rate(
 
 
 # ------------------------------
-# 指标 4: 物体碰撞率（与 GT 无关）
+# 2.2.4 指标: 物体碰撞率（与 GT 无关）
 # ------------------------------
 
 
@@ -515,7 +526,7 @@ def metric_object_collision_rate(
 
 
 # ------------------------------
-# 指标 5: 物体出界率（与 GT 无关）
+# 2.2.5 指标: 物体出界率（与 GT 无关）
 # ------------------------------
 
 
@@ -573,6 +584,166 @@ def metric_out_of_bounds_rate(
 
 
 # ------------------------------
+# 2.3 维度二: 物体识别能力
+# ------------------------------
+
+
+def metric_recognition_rate(*, k_matched: int, n_gt: int) -> Optional[float]:
+    """2.3.1 物体识别率 RR = K/N。"""
+    if n_gt <= 0:
+        return None
+    return k_matched / n_gt
+
+
+def metric_hallucination_rate(*, m_hallucinated: int, k_matched: int) -> Optional[float]:
+    """2.3.2 幻觉比率 HR = M/K。"""
+    if k_matched <= 0:
+        return None
+    return m_hallucinated / k_matched
+
+
+# ------------------------------
+# 2.4 维度三: 场景识别能力
+# ------------------------------
+
+
+def metric_room_type_accuracy(
+    gt_payload: Dict[str, Any], pred_payload: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    2.4.1 房间类型准确率（单样本）。
+
+    单样本下等价于 0/1 正确率：
+    - correct_count = 1 或 0
+    - total_count = 1
+    - accuracy = correct_count / total_count
+    """
+
+    def _room_type(payload: Dict[str, Any]) -> Optional[str]:
+        scene = payload.get("scene")
+        if not isinstance(scene, dict):
+            return None
+        room = scene.get("room")
+        if not isinstance(room, dict):
+            return None
+        t = room.get("type")
+        if t is None:
+            return None
+        return str(t).strip().lower()
+
+    gt_type = _room_type(gt_payload)
+    pred_type = _room_type(pred_payload)
+    if gt_type is None or pred_type is None:
+        return {
+            "correct_count": None,
+            "total_count": 1,
+            "room_type_accuracy": None,
+            "gt_room_type": gt_type,
+            "pred_room_type": pred_type,
+            "warning": "missing room.type in gt or prediction",
+        }
+
+    correct = 1 if gt_type == pred_type else 0
+    return {
+        "correct_count": correct,
+        "total_count": 1,
+        "room_type_accuracy": float(correct),
+        "gt_room_type": gt_type,
+        "pred_room_type": pred_type,
+    }
+
+
+# ------------------------------
+# 2.5 维度四: 结构化输出能力
+# ------------------------------
+
+
+def _validate_prediction_schema_minimal(pred_payload: Dict[str, Any]) -> List[str]:
+    """
+    轻量结构校验（不替代 JSON Schema），用于 2.3.4 的可用性统计。
+
+    注意：此函数只检查“已成功解析为 dict 的 JSON”。
+    语法级 parse 失败应在批处理读取阶段单独计数。
+    """
+    errors: List[str] = []
+
+    scene = pred_payload.get("scene")
+    if not isinstance(scene, dict):
+        return ["missing or invalid top-level scene"]
+
+    room = scene.get("room")
+    if not isinstance(room, dict):
+        errors.append("missing or invalid scene.room")
+    else:
+        if not isinstance(room.get("type"), str):
+            errors.append("scene.room.type must be string")
+        size = room.get("size")
+        if not (
+            isinstance(size, list)
+            and len(size) == 3
+            and all(isinstance(v, (int, float)) for v in size)
+        ):
+            errors.append("scene.room.size must be [float,float,float]")
+        if not isinstance(room.get("asset_count"), int):
+            errors.append("scene.room.asset_count must be int")
+
+    objs = scene.get("objects")
+    if not isinstance(objs, list):
+        errors.append("scene.objects must be a list")
+        return errors
+
+    for idx, o in enumerate(objs):
+        if not isinstance(o, dict):
+            errors.append(f"scene.objects[{idx}] must be object")
+            continue
+        if not isinstance(o.get("id"), str):
+            errors.append(f"scene.objects[{idx}].id must be string")
+        if not isinstance(o.get("category"), str):
+            errors.append(f"scene.objects[{idx}].category must be string")
+
+        pos = o.get("position")
+        if not (
+            isinstance(pos, list)
+            and len(pos) == 3
+            and all(isinstance(v, (int, float)) for v in pos)
+        ):
+            errors.append(f"scene.objects[{idx}].position must be [float,float,float]")
+
+        dims = o.get("dimensions")
+        if not (
+            isinstance(dims, list)
+            and len(dims) == 3
+            and all(isinstance(v, (int, float)) for v in dims)
+        ):
+            errors.append(
+                f"scene.objects[{idx}].dimensions must be [float,float,float]"
+            )
+
+        yaw = o.get("rotation_yaw")
+        if yaw is not None and not isinstance(yaw, (int, float)):
+            errors.append(f"scene.objects[{idx}].rotation_yaw must be number or null")
+
+    return errors
+
+
+def metric_json_failure_rate(pred_payload: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    2.5.1 JSON 失败率（单样本）。
+
+    这里的“失败”定义为：虽然 JSON 能 parse，但结构校验失败。
+    在批量评估时，可把 parse 失败与 schema 失败汇总为统一 F/T。
+    """
+    errors = _validate_prediction_schema_minimal(pred_payload)
+    failed = 1 if errors else 0
+    return {
+        "failed_count": failed,
+        "total_count": 1,
+        "json_failure_rate": float(failed),
+        "schema_errors": errors,
+    }
+
+
+# ------------------------------
 # 总评估入口
 # ------------------------------
 
@@ -591,8 +762,10 @@ def evaluate_scene(
 
     返回结构包含:
     - global_counts: N/K/M/FN
-    - geometry_spatial_accuracy: 位置、IoU、旋转
-    - gt_independent: 碰撞率、出界率
+    - geometry_spatial_accuracy (2.2)
+    - object_recognition (2.3)
+    - scene_recognition (2.4)
+    - structured_output (2.5)
     """
     gt_objects = _extract_objects(gt_payload)
     pred_objects = _extract_objects(pred_payload)
@@ -652,13 +825,18 @@ def evaluate_scene(
         }
     )
 
+    rr = metric_recognition_rate(k_matched=k, n_gt=n)
+    hr = metric_hallucination_rate(m_hallucinated=m, k_matched=k)
+    room_type = metric_room_type_accuracy(gt_payload, pred_payload)
+    json_fail = metric_json_failure_rate(pred_payload)
+
     return {
         "global_counts": {
             "N_gt_objects": n,
             "K_matched_objects": k,
             "M_hallucinated_objects": m,
             "FN_missed_gt_objects": fn,
-            "recognition_rate_K_over_N": (k / n) if n > 0 else None,
+            "recognition_rate_K_over_N": rr,
             "hallucination_rate_M_over_N": (m / n) if n > 0 else None,
         },
         "geometry_spatial_accuracy": {
@@ -669,6 +847,16 @@ def evaluate_scene(
         "gt_independent": {
             "object_collision": collision,
             "object_out_of_bounds": out_of_bounds,
+        },
+        "object_recognition": {
+            "recognition_rate_K_over_N": rr,
+            "hallucination_rate_M_over_K": hr,
+        },
+        "scene_recognition": {
+            "room_type_accuracy": room_type,
+        },
+        "structured_output": {
+            "json_failure": json_fail,
         },
         "matching": {
             "matched_pairs": [
@@ -693,7 +881,7 @@ def evaluate_scene(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="IDEAL 几何与空间准确性评测（2.3.1）"
+        description="IDEAL 硬指标评测（编号 2.x）"
     )
     parser.add_argument("--gt", required=True, help="GT JSON 路径")
     parser.add_argument("--pred", required=True, help="预测 JSON 路径")
