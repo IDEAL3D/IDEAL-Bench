@@ -25,7 +25,7 @@
 
 | 系列 | 模型版本（示例） | 发布时间 | 开源地址  | API/部署文档 | 代码文件 |
 |---|---|---|---|---|---|
-| DeepSeek | DeepSeek-Janus-pro-7B | 2025-02 |https://huggingface.co/deepseek-ai/Janus-Pro-7B| https://docs.vllm.ai | 需按具体 checkpoint 选型 |
+| DeepSeek | DeepSeek-Janus-pro-7B | 2025-02 |https://huggingface.co/deepseek-ai/Janus-Pro-7B| https://github.com/deepseek-ai/Janus | inference/deepseek_janus_pro_api.py (infer_deepseek_janus_pro) |
 | Qwen | Qwen3-VL-30B-A3B-Instruct | 2025-11 | https://huggingface.co/collections/Qwen/qwen3-vl | https://qwen.readthedocs.io | 高质量主力开源候选 |
 | Qwen | Qwen3-VL-8B-Instruct | 2025-11 | https://huggingface.co/collections/Qwen/qwen3-vl | https://qwen.readthedocs.io | 低成本高吞吐候选 |
 | InternVL | InternVL3.5-30B-A3B | 2025-08 | https://huggingface.co/collections/OpenGVLab/internvl35 | https://internvl.readthedocs.io | inference/internvl35_30b_a3b_api.py (infer_internvl35_30b_a3b) |
