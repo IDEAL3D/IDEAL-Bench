@@ -28,6 +28,7 @@
 | DeepSeek | DeepSeek-Janus-pro-7B | 2025-02 |https://huggingface.co/deepseek-ai/Janus-Pro-7B| https://github.com/deepseek-ai/Janus | inference/deepseek_janus_pro_api.py (infer_deepseek_janus_pro) |
 | Qwen | Qwen3-VL-30B-A3B-Instruct | 2025-11 | https://huggingface.co/collections/Qwen/qwen3-vl | https://qwen.readthedocs.io | 高质量主力开源候选 |
 | Qwen | Qwen3-VL-8B-Instruct | 2025-11 | https://huggingface.co/collections/Qwen/qwen3-vl | https://qwen.readthedocs.io | 低成本高吞吐候选 |
+| LLaVA | LLaVA-Next v1.6 Mistral 7B | 2025-01 | https://huggingface.co/llava-hf/llava-v1.6-mistral-7b-hf | https://huggingface.co/docs/transformers/main/model_doc/llava_next | inference/llava_next_mistral_7b_api.py (infer_llava_next_mistral_7b) |
 | InternVL | InternVL3.5-30B-A3B | 2025-08 | https://huggingface.co/collections/OpenGVLab/internvl35 | https://internvl.readthedocs.io | inference/internvl35_30b_a3b_api.py (infer_internvl35_30b_a3b) |
 | InternVL | InternVL3.5-8B | 2025-08 | https://huggingface.co/collections/OpenGVLab/internvl35| https://internvl.readthedocs.io | inference/internvl35_8b_api.py (infer_internvl35_8b) |
 
