@@ -10,7 +10,7 @@
 
 ## 1) 闭源主流 VLM API（优先）
 
-| 厂商 | 模型版本（示例） | 发布时间 | 能力定位（简） | API 文档 | 价格(Input/Output) |
+| 厂商 | 模型版本（示例） | 发布时间 | 能力定位（简） | API 文档 | 价格(Input/Output per 1M tokens) |
 |---|---|---|---|---|---|
 | OpenAI | gpt-5.4 pro | 2026-03 | 最新代多模态推理、结构化输出强 | https://developers.openai.com/api/docs/models/gpt-5.4-pro| 30$/180$ |
 | OpenAI | gpt-5.4 | 2026-03 | 最新代多模态推理、结构化输出强 | https://developers.openai.com/api/docs/models/gpt-5.4| 2.5$/15$ |
@@ -23,13 +23,13 @@
 
 ## 2) 开源主流 VLM（自部署/第三方托管）
 
-| 系列 | 模型版本（示例） | 发布时间 | 开源地址 / 文档 | API/部署文档 | 备注 |
+| 系列 | 模型版本（示例） | 发布时间 | 开源地址  | API/部署文档 | 代码文件 |
 |---|---|---|---|---|---|
 | DeepSeek | DeepSeek-Janus-pro-7B | 2025-02 |https://huggingface.co/deepseek-ai/Janus-Pro-7B| https://docs.vllm.ai | 需按具体 checkpoint 选型 |
 | Qwen | Qwen3-VL-30B-A3B-Instruct | 2025-11 | https://huggingface.co/collections/Qwen/qwen3-vl | https://qwen.readthedocs.io | 高质量主力开源候选 |
 | Qwen | Qwen3-VL-8B-Instruct | 2025-11 | https://huggingface.co/collections/Qwen/qwen3-vl | https://qwen.readthedocs.io | 低成本高吞吐候选 |
-| InternVL | InternVL3.5-30B-A3B | 2025-08 | https://huggingface.co/collections/OpenGVLab/internvl35 | https://internvl.readthedocs.io | 复杂视觉语义表现强 |
-| InternVL | InternVL3.5-8B | 2025-08 | https://huggingface.co/collections/OpenGVLab/internvl35| https://internvl.readthedocs.io | 小模型基线 |
+| InternVL | InternVL3.5-30B-A3B | 2025-08 | https://huggingface.co/collections/OpenGVLab/internvl35 | https://internvl.readthedocs.io | inference/internvl35_30b_a3b_api.py (infer_internvl35_30b_a3b) |
+| InternVL | InternVL3.5-8B | 2025-08 | https://huggingface.co/collections/OpenGVLab/internvl35| https://internvl.readthedocs.io | inference/internvl35_8b_api.py (infer_internvl35_8b) |
 
 ## 3) 建议在 IDEAL 中的测试优先级
 

@@ -10,6 +10,10 @@ result/*
 [INTERNAL]api/secrets/*
 ![INTERNAL]api/secrets/.gitkeep
 
+# inference/models/: keep directory in git via .gitkeep; ignore model files/weights
+inference/models/*
+!inference/models/.gitkeep
+
 # Python
 __pycache__/
 *.py[cod]

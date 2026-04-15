@@ -43,8 +43,10 @@ INFO_JSON_LEGACY = "info.json"
 ALLOWED_ROOM_TYPES = tuple(ROOM_TYPES)
 
 PROTOCOL_PROMPT_FILES = {
-    "floor": "system_prompt_floor.md",
-    "camera": "system_prompt_camera.md",
+    "floor": "system_prompt_room_centered.md",
+    "camera": "system_prompt_camera_centered.md",
+    "room_centered": "system_prompt_room_centered.md",
+    "camera_centered": "system_prompt_camera_centered.md",
 }
 
 
