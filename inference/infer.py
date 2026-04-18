@@ -15,27 +15,29 @@ from configs.constant import ROOM_TYPES, canonicalize_asset_category  # noqa: E4
 from inview2sp import inject_into_system_prompt  # noqa: E402
 
 """
-Inference CLI: discover scenes, call Gemini or OpenAI, write ``result/{protocol}/{scene}/{model}.json``.
+Inference CLI: discover scenes, call Gemini or OpenAI, write ``result/inference/{protocol}/{scene}/{model}.json``.
 
-Reads ``image.png`` and ``categories_in_view`` from each scene dir; user message carries
-``assets_list`` + ``allowed_room_types``. System prompt template in ``prompts/system_prompt_*.md``
-gets ``{{THIS_ROOM_CONTAINS}}`` filled via ``inview2sp.inject_into_system_prompt``. Scene IDs
-and paths are not sent as hints to the model; Gemini uploads use a temp copy with a neutral name.
+Reads an RGB frame (``image.png`` preferred, else ``color.png`` as in ``data/scenes``) and
+``categories_in_view`` from ``objects_in_view.json`` (or legacy ``info.json``) per scene dir.
+``--protocol`` selects the coordinate-system prompt under ``prompts/`` (room-centered vs camera-centered).
+User message carries ``assets_list`` + ``allowed_room_types``. System prompt template gets
+``{{THIS_ROOM_CONTAINS}}`` filled via ``inview2sp.inject_into_system_prompt``. Scene IDs and paths
+are not sent as hints to the model; Gemini uploads use a temp copy with a neutral name.
 
-Example: 
+Example:
 
-cd inference 
+cd inference
 
 python infer.py --model gemini-3-flash-preview --protocol floor
-
 
 """
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(BASE_DIR)
-DEFAULT_SCENES_ROOT = os.path.join(PROJECT_DIR, "data", "scenes2test")
-SCENE_IMAGE_NAME = "image.png"
+DEFAULT_SCENES_ROOT = os.path.join(PROJECT_DIR, "data", "scenes")
+# Prefer explicit inference name; fall back to render output from the generation pipeline.
+SCENE_IMAGE_CANDIDATES: tuple[str, ...] = ("image.png", "color.png")
 OBJECTS_IN_VIEW_JSON = "objects_in_view.json"
 INFO_JSON_LEGACY = "info.json"
 
@@ -70,9 +72,19 @@ def system_prompt_path_for_protocol(protocol: str) -> str:
 
 def prediction_json_path(protocol: str, model_name: str, scene_id: str) -> str:
     mid = model_id_for_path(model_name)
-    out_dir = os.path.join(PROJECT_DIR, "result", protocol, scene_id)
+    # protocol = coordinate-frame choice; matches prompts/ and result/inference/<protocol>/
+    out_dir = os.path.join(PROJECT_DIR, "result", "inference", protocol, scene_id)
     os.makedirs(out_dir, exist_ok=True)
     return os.path.join(out_dir, f"{mid}.json")
+
+
+def resolve_scene_image_path(scene_dir: str) -> str | None:
+    """First existing file among ``SCENE_IMAGE_CANDIDATES`` under ``scene_dir``; else ``None``."""
+    for name in SCENE_IMAGE_CANDIDATES:
+        cand = os.path.join(scene_dir, name)
+        if os.path.isfile(cand):
+            return os.path.abspath(cand)
+    return None
 
 
 def load_system_prompt(path: str) -> str:
@@ -135,7 +147,7 @@ def _copy_image_to_temp_for_upload(image_path: str) -> str:
 
 
 def discover_scenes(scenes_root: str) -> list[tuple[str, str]]:
-    """List immediate subdirs under ``scenes_root`` that contain ``SCENE_IMAGE_NAME``."""
+    """List immediate subdirs under ``scenes_root`` that contain a usable RGB image."""
     if not os.path.isdir(scenes_root):
         raise FileNotFoundError(f"Scenes root is missing or not a directory: {scenes_root}")
 
@@ -144,11 +156,13 @@ def discover_scenes(scenes_root: str) -> list[tuple[str, str]]:
         sub = os.path.join(scenes_root, name)
         if not os.path.isdir(sub):
             continue
-        img = os.path.join(sub, SCENE_IMAGE_NAME)
-        if os.path.isfile(img):
-            pairs.append((name, os.path.abspath(img)))
+        img = resolve_scene_image_path(sub)
+        if img:
+            pairs.append((name, img))
         else:
-            print(f"Skip (no {SCENE_IMAGE_NAME}): {name}")
+            print(
+                f"Skip (no RGB image; tried {', '.join(SCENE_IMAGE_CANDIDATES)}): {name}"
+            )
     return pairs
 
 
@@ -168,14 +182,16 @@ def tasks_for_named_scenes(
     out: list[tuple[str, str]] = []
     for sid in ordered:
         sub = os.path.join(scenes_root, sid)
-        img = os.path.join(sub, SCENE_IMAGE_NAME)
         if not os.path.isdir(sub):
             print(f"Error: scene directory not found: {sid}")
             raise SystemExit(1)
-        if not os.path.isfile(img):
-            print(f"Error: missing {SCENE_IMAGE_NAME}: {sid}")
+        img = resolve_scene_image_path(sub)
+        if not img:
+            print(
+                f"Error: missing RGB image for {sid} (tried {', '.join(SCENE_IMAGE_CANDIDATES)})"
+            )
             raise SystemExit(1)
-        out.append((sid, os.path.abspath(img)))
+        out.append((sid, img))
     if not out:
         print("Error: --scene had no valid scene ids")
         raise SystemExit(1)
@@ -378,7 +394,10 @@ def process_openai(
 
 def parse_args():
     p = argparse.ArgumentParser(
-        description="Run Gemini or OpenAI on scene image.png + metadata; write JSON under result/."
+        description=(
+            "Run Gemini or OpenAI on scene RGB image (image.png or color.png) + objects_in_view.json; "
+            "write JSON under result/inference/<protocol>/."
+        )
     )
     p.add_argument(
         "--scenes-root",
@@ -399,7 +418,10 @@ def parse_args():
         "--protocol",
         choices=tuple(PROTOCOL_PROMPT_FILES.keys()),
         default="floor",
-        help="Prompt/coordinate protocol: prompts/system_prompt_{protocol}.md",
+        help=(
+            "Coordinate frame → prompts/system_prompt_*.md and result/inference/<protocol>/ "
+            "(floor/room_centered = room-centered; camera/camera_centered = camera-centered)"
+        ),
     )
     p.add_argument(
         "--scene-prefix",
@@ -455,7 +477,8 @@ def main() -> None:
 
     if not tasks:
         print(
-            f"Error: no scene subdirs with {SCENE_IMAGE_NAME} under {scenes_root}."
+            "Error: no scene subdirs with a usable RGB image "
+            f"({', '.join(SCENE_IMAGE_CANDIDATES)}) under {scenes_root}."
         )
         raise SystemExit(1)
 
@@ -475,8 +498,9 @@ def main() -> None:
 
     if not valid_tasks:
         print(
-            f"Error: no runnable scenes. Each dir with {SCENE_IMAGE_NAME} needs "
-            f"a valid {OBJECTS_IN_VIEW_JSON} or {INFO_JSON_LEGACY} with non-empty categories_in_view."
+            "Error: no runnable scenes. Each dir needs a usable RGB image "
+            f"({', '.join(SCENE_IMAGE_CANDIDATES)}) and a valid {OBJECTS_IN_VIEW_JSON} "
+            f"or {INFO_JSON_LEGACY} with non-empty categories_in_view."
         )
         raise SystemExit(1)
 
@@ -491,7 +515,7 @@ def main() -> None:
     print(f"Scenes root: {scenes_root}")
     print(f"Protocol: {args.protocol}")
     print(
-        f"Output: result/{args.protocol}/<scene_id>/{mid}.json\n"
+        f"Output: result/inference/{args.protocol}/<scene_id>/{mid}.json\n"
     )
 
     success = 0

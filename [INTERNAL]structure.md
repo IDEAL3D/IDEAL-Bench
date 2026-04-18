@@ -164,7 +164,7 @@
 ## 8. inference（VLM 推理）
 
 - `inference/infer.py`
-  - 推理主入口：遍历场景、加载图片与可见对象列表、构造消息、调用 API、写入 `result/`。
+  - 推理主入口：遍历场景、加载图片与可见对象列表、构造消息、调用 API、写入 `result/inference/<protocol>/<scene_id>/`。
 
 - `inference/inview2sp.py`
   - 将 `objects_in_view` 中信息注入系统提示词（如“当前房间包含哪些类别”）。

@@ -80,7 +80,7 @@
 |------|------|
 | 冻结的场景数据 | `data/scenes/`：每场景一个子目录；常见内容包括 `.blend`、渲染图、`scene_GT.json`、资产等（具体以数据集发布说明或本地同步结果为准）。 |
 | 清单与划分 | `data/manifests/`：可存放入库后的场景列表、train/val/test 等划分（由发布或迁移脚本维护；与 `data/scenes_raw/manifests` 相互独立）。 |
-| 推理 | `inference/`：`infer.py` 调用云端 VLM；`inview2sp.py` 将场景 `categories_in_view` 注入 `prompts/system_prompt_*.md` 中的 `{{THIS_ROOM_CONTAINS}}`（与 user 侧 `assets_list` 同源）；`prompts/` 为 Markdown 模板；预测默认写入仓库根 `result/`。 |
+| 推理 | `inference/`：`infer.py` 调用云端 VLM；`inview2sp.py` 将场景 `categories_in_view` 注入 `prompts/system_prompt_*.md` 中的 `{{THIS_ROOM_CONTAINS}}`（与 user 侧 `assets_list` 同源）；`prompts/` 为 Markdown 模板；预测默认写入 `result/inference/<protocol>/<scene_id>/`。 |
 | 重建 | `reconstruction/`：根据模型输出的 JSON，在对应 `.blend` 中调整资产并按约定相机渲染。 |
 | 评测 | `benchmarks/`：当前仅有占位目录 `evaluation/`、`protocols/`、`leaderboard/`（`.gitkeep`），供后续指标脚本、协议文稿与榜单使用；模型输出与指标快照默认与仓库根 `result/` 对齐。 |
 | 配置与规范 | `configs/schema/`：JSON Schema（用于校验）；`configs/experiments/`：实验配置。 |
@@ -150,7 +150,7 @@ IDEAL/
 │       ├── truncation_filter.py  # F3 截断（bpy；filter_inview 子进程 -m）
 │       └── __init__.py
 ├── inference/
-│   ├── infer.py                  # VLM CLI；预测写入 result/{protocol}/{scene_id}/
+│   ├── infer.py                  # VLM CLI；预测写入 result/inference/{protocol}/{scene_id}/
 │   ├── inview2sp.py              # 将 categories_in_view 注入 system 模板 {{THIS_ROOM_CONTAINS}}
 │   ├── models/.gitkeep
 │   └── prompts/
@@ -190,7 +190,7 @@ IDEAL/
 
 ### 运行产物目录（仓库根下 `result/`，默认被 `.gitignore` 排除）
 
-目录层级为 **`protocol` → 场景子目录**。场景目录内 **不再** 划分 `json/`、`image/`、`blend/` 等子文件夹；`{model_id}.json`、`.png`、重建得到的 `.blend` 以及后续 benchmark 导出的 JSON 等 **在同一层级并列存放**，便于批处理。真值文件仍位于 `data/scenes2test/{scene_id}/GT.json`。
+目录层级为 **`result/inference/<protocol>/<scene_id>/`**（`protocol` 为 `floor` 或 `camera`）。场景目录内 **不再** 划分 `json/`、`image/`、`blend/` 等子文件夹；`{model_id}.json`、`.png`、重建得到的 `.blend` 以及后续 benchmark 导出的 JSON 等 **在同一层级并列存放**，便于批处理。真值文件仍位于 `data/scenes2test/{scene_id}/GT.json`。
 
 **文件命名约定（建议）**
 
@@ -206,7 +206,7 @@ IDEAL/
 - **`protocol`**：取值为 `floor` 或 `camera`，与 `inference/prompts/` 下 `system_prompt_{protocol}.md` 对应。
 - **`scene_id`**：与 `data/scenes2test/` 下场景子目录名称一致。
 
-`inference/infer.py` 将预测写入 **`result/{protocol}/{scene_id}/{model_id}.json`**。每次请求前由 `inview2sp.inject_into_system_prompt` 把该场景的 `categories_in_view` 填入 `prompts/system_prompt_*.md` 中的 **`{{THIS_ROOM_CONTAINS}}`**（user 消息中的 `assets_list` 与之一致）。
+`inference/infer.py` 将预测写入 **`result/inference/{protocol}/{scene_id}/{model_id}.json`**。每次请求前由 `inview2sp.inject_into_system_prompt` 把该场景的 `categories_in_view` 填入 `prompts/system_prompt_*.md` 中的 **`{{THIS_ROOM_CONTAINS}}`**（user 消息中的 `assets_list` 与之一致）。
 
 ### 重建流程与命令
 
@@ -218,20 +218,20 @@ IDEAL/
 
 | 范围 | 参数示例 |
 |------|----------|
-| 仅 `floor` 协议 | `--protocol floor`，或 `--task-dir result/floor` |
-| 仅 `camera` 协议 | `--protocol camera`，或 `--task-dir result/camera` |
+| 仅 `floor` 协议 | `--protocol floor`，或 `--task-dir result/inference/floor` |
+| 仅 `camera` 协议 | `--protocol camera`，或 `--task-dir result/inference/camera` |
 | 两协议全部场景 | 省略 `--protocol`，且不指定 `--task-dir` / `--prediction` |
 
 可选缩小范围：`--model-id`、`--scene`（可重复）。
 
-**单次任务**：`--prediction result/floor/<scene>/…/<model_id>.json`，或 `--task-dir result/floor/<scene>/`（多模型时需配合 `--model-id`）。
+**单次任务**：`--prediction result/inference/floor/<scene>/…/<model_id>.json`，或 `--task-dir result/inference/floor/<scene>/`（多模型时需配合 `--model-id`）。
 
 **仅列出任务（`--dry-run`）示例**：
 
 ```bash
 cd /path/to/IDEAL
 python reconstruction/reconstruct.py --protocol floor --dry-run
-python reconstruction/reconstruct.py --task-dir result/camera --dry-run
+python reconstruction/reconstruct.py --task-dir result/inference/camera --dry-run
 ```
 
 相对路径首先相对于 **当前工作目录** 解析；若无法解析，则相对于 **仓库根 `IDEAL/`** 解析。

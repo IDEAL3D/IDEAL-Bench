@@ -70,7 +70,7 @@ python inference/infer.py \
   --model gemini-2.0-flash
 ```
 
-Predictions are written to `result/floor/{scene_id}/{model_id}.json`.
+Predictions are written to `result/inference/{protocol}/{scene_id}/{model_id}.json` (`protocol` is `floor` or `camera`).
 
 ### Reconstruct and render
 
@@ -97,7 +97,7 @@ IDEAL/
 ├── configs/             # Path configs, JSON Schema, constants
 ├── docs/                # Geometric conventions and design documents
 ├── data/                # Scene data (managed via HF Dataset)
-├── result/              # Inference and reconstruction outputs (local)
+├── result/              # Outputs: inference/ (VLM JSON), reconstruction/ (future), etc.
 └── infinigen-ideal/     # Modified Infinigen (Git submodule)
 ```
 
