@@ -26,11 +26,11 @@ from .defaults import (
     METADATA_JSON,
 )
 
-from configs.constant import MIN_VISIBLE_PIXELS, canonicalize_asset_category
+from configs.constants import MIN_VISIBLE_PIXELS, canonicalize_asset_category
 
 
 class MissingInViewInfoError(RuntimeError):
-    """镜内语义链路缺文件或 metadata 不可用（GT / metadata / instance 图等）。"""
+    """Raised when in-view pipeline inputs are missing or metadata is unusable (e.g. GT, metadata.json, instance segmentation)."""
 
 
 # ---------------------------------------------------------------------------

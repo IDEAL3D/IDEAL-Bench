@@ -17,7 +17,7 @@ Per-task execution (in order; each step must succeed before the next runs)
    GT slots, writes geometry back, merges with ``GT.json``, and emits
    ``{model_id}_render.json`` next to the prediction file.
 
-2. **bpy_scripts/render.py** — executed with the current interpreter (which
+2. **render.py** (same directory as this script) — executed with the current interpreter (which
    must be able to ``import bpy``): reads ``{model_id}_render.json``, saves
    ``{model_id}.blend``, renders ``{model_id}.png``.  The original
    ``scene.blend`` is never modified.
@@ -52,10 +52,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-try:
-    from benchmarks.reconstruction import runtime as _rt
-except ImportError:
-    import runtime as _rt
+# 与 compose.py 相同：脚本在 benchmarks/reconstruction/ 下执行时须把 IDEAL 根加入 sys.path。
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from benchmarks.reconstruction import runtime as _rt
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +75,7 @@ def _compose_script() -> Path:
 
 
 def _render_script() -> Path:
-    return Path(__file__).resolve().parent / "bpy_scripts" / "render.py"
+    return Path(__file__).resolve().parent / "render.py"
 
 
 def _resolve_scene_dir(project_dir: Path, scenes_root: Path, scene_id: str) -> Path:

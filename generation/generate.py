@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """
 Batch driver for rectangular single-room scenes: delegates to ``generate_lib/core.py``.
-Room types are canonical ids in ``configs.constant.ROOM_TYPES`` (10 types). Each scene is finalized to
+Room types are canonical ids in ``configs.constants.ROOM_TYPES`` (10 types). Each scene is finalized to
 ``scene.blend``, ``color.png``, uint16 ``instance_segmentation.png``, ``metadata.json``, and ``GT.json``.
 
 Always writes under ``IDEAL/data/scenes_raw`` (see ``configs.data_paths.SCENES_RAW_ROOT``) and updates ``data/scenes_raw/manifests/``
@@ -36,7 +36,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from configs.constant import (
+from configs.constants import (
     LIVING_SPACE_ROOM_TYPES,
     ROOM_TYPES,
     WORKING_SPACE_ROOM_TYPES,

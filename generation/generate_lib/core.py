@@ -2,7 +2,7 @@
 """
 Backend for rectangular single-room scenes: runs ``infinigen_examples.single`` and, by default, keeps
 blend, RGB beauty pass, uint16 instance map, ``metadata.json``, and ``GT.json`` per scene.
-Room types are canonical ids in ``configs.constant.ROOM_TYPES``; default output layout is
+Room types are canonical ids in ``configs.constants.ROOM_TYPES``; default output layout is
 ``data/scenes_raw/{type}_s{seed}/`` (override with ``--scenes-root`` / ``--output_folder``).
 For batch runs and RAW manifests, prefer ``generation/generate.py``; see ``../../[INTERNAL]QUICKSTART/generate.md`` and ``../../docs/LIMITATION.md``.
 
@@ -37,7 +37,7 @@ if str(_REPO_ROOT) not in sys.path:
 import numpy as np
 from imageio import imwrite
 
-from configs.constant import (
+from configs.constants import (
     LIVING_SPACE_ROOM_TYPES,
     ROOM_TYPES,
     WORKING_SPACE_ROOM_TYPES,
@@ -87,7 +87,7 @@ _DEFAULT_SIZE_TIERS: dict[str, tuple[float, float, float, float]] = {
     "large":  (6.0, 8.0, 6.0, 8.0),
 }
 
-# Per-room-type footprint tiers (keys are **canonical**, same as ``configs.constant.ROOM_TYPES``).
+# Per-room-type footprint tiers (keys are **canonical**, same as ``configs.constants.ROOM_TYPES``).
 # Residential living_space (6): kitchen/bath/dining fixed single tier; bedroom/livingroom two tiers 50/50 by seed;
 # homestudio is the old large-bedroom / open-studio layout (user selects room type).
 ROOM_SIZE_TIERS: dict[str, dict[str, tuple[float, float, float, float]]] = {
@@ -660,7 +660,7 @@ def main() -> None:
         type=str,
         default="bedroom",
         choices=list(ROOM_TYPES),
-        help="Canonical room type (configs.constant.ROOM_TYPES); folder name {room_type}_s{seed}",
+        help="Canonical room type (configs.constants.ROOM_TYPES); folder name {room_type}_s{seed}",
     )
     parser.add_argument(
         "--task",

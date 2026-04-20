@@ -11,7 +11,7 @@ import time
 _PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT not in sys.path:
     sys.path.insert(0, _PROJECT)
-from configs.constant import ROOM_TYPES, canonicalize_asset_category  # noqa: E402
+from configs.constants import ROOM_TYPES, canonicalize_asset_category  # noqa: E402
 from inview2sp import inject_into_system_prompt  # noqa: E402
 
 """
@@ -41,7 +41,7 @@ SCENE_IMAGE_CANDIDATES: tuple[str, ...] = ("image.png", "color.png")
 OBJECTS_IN_VIEW_JSON = "objects_in_view.json"
 INFO_JSON_LEGACY = "info.json"
 
-# Same room-type vocabulary as ``configs.constant.ROOM_TYPES`` (generation pipeline).
+# Same room-type vocabulary as ``configs.constants.ROOM_TYPES`` (generation pipeline).
 ALLOWED_ROOM_TYPES = tuple(ROOM_TYPES)
 
 PROTOCOL_PROMPT_FILES = {

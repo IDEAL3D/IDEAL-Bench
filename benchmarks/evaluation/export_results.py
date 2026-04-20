@@ -26,23 +26,30 @@ import sys
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT / "configs") not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT / "configs"))
-from constant import ROOM_TYPES
+from constants import ROOM_TYPES
 
 # ---------------------------------------------------------------------------
 # Metric applicability — explicit room type lists
 # ---------------------------------------------------------------------------
-# D1 PE / RE / IOU: living space room types + meetingroom (GT-matched geometry).
-# D1 OOR / OOB:     all room types (GT-independent spatial validity).
-# D2 / D3 / D4:     all room types.
-# D5:               classroom, library, office (grid layout evaluation).
+#
+# Two distinct evaluation pipelines:
+#
+#   Non-grid scenes (living space + meetingroom):
+#     D1 (PE/RE/IOU/OOR/OOB) + D2 (RR/HR) + D3 + D4
+#     Object matching via match_objects(); full geometry evaluation.
+#
+#   Grid scenes (classroom / library / office):
+#     D3 + D4 + D5 only.
+#     No object matching; layout evaluated via grid metrics.
+#     D1 and D2 are not applicable — they are set to null in output files.
 
-_D1_GEOMETRY_ROOM_TYPES: List[str] = sorted([
+_NON_GRID_ROOM_TYPES: List[str] = sorted([
     "bedroom", "homestudio", "livingroom",
     "kitchen", "bathroom", "diningroom",
     "meetingroom",
 ])
 
-_D5_GRID_ROOM_TYPES: List[str] = sorted([
+_GRID_ROOM_TYPES: List[str] = sorted([
     "classroom", "library", "office",
 ])
 
@@ -66,37 +73,37 @@ METRICS: List[str] = [
 METRIC_META: Dict[str, Dict[str, Any]] = {
     "d1_pe": {
         "label": "D1_pe",
-        "applicable_room_types": _D1_GEOMETRY_ROOM_TYPES,
+        "applicable_room_types": _NON_GRID_ROOM_TYPES,
         "is_ratio": False,
     },
     "d1_re": {
         "label": "D1_re",
-        "applicable_room_types": _D1_GEOMETRY_ROOM_TYPES,
+        "applicable_room_types": _NON_GRID_ROOM_TYPES,
         "is_ratio": False,
     },
     "d1_iou": {
         "label": "D1_iou",
-        "applicable_room_types": _D1_GEOMETRY_ROOM_TYPES,
+        "applicable_room_types": _NON_GRID_ROOM_TYPES,
         "is_ratio": False,
     },
     "d1_oor": {
         "label": "D1_oor",
-        "applicable_room_types": "all",
+        "applicable_room_types": _NON_GRID_ROOM_TYPES,
         "is_ratio": False,
     },
     "d1_oob": {
         "label": "D1_oob",
-        "applicable_room_types": "all",
+        "applicable_room_types": _NON_GRID_ROOM_TYPES,
         "is_ratio": False,
     },
     "d2_rr": {
         "label": "D2_rr",
-        "applicable_room_types": "all",
+        "applicable_room_types": _NON_GRID_ROOM_TYPES,
         "is_ratio": False,
     },
     "d2_hr": {
         "label": "D2_hr",
-        "applicable_room_types": "all",
+        "applicable_room_types": _NON_GRID_ROOM_TYPES,
         "is_ratio": False,
     },
     "d3_acc": {
@@ -111,17 +118,17 @@ METRIC_META: Dict[str, Dict[str, Any]] = {
     },
     "d5_grid": {
         "label": "D5_grid",
-        "applicable_room_types": _D5_GRID_ROOM_TYPES,
+        "applicable_room_types": _GRID_ROOM_TYPES,
         "is_ratio": False,
     },
     "d5_in_grid_pe": {
         "label": "D5_in_grid_pe",
-        "applicable_room_types": _D5_GRID_ROOM_TYPES,
+        "applicable_room_types": _GRID_ROOM_TYPES,
         "is_ratio": False,
     },
     "d5_yaw": {
         "label": "D5_yaw",
-        "applicable_room_types": _D5_GRID_ROOM_TYPES,
+        "applicable_room_types": _GRID_ROOM_TYPES,
         "is_ratio": False,
     },
 }

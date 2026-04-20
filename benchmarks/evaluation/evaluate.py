@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from metrics_grid import evaluate_grid
-from grid_utils import get_room_type
+from extract_grid import get_room_type
 from export_results import (
     export_per_model_csv,
     export_per_roomtype_json,
@@ -340,12 +340,26 @@ def evaluate(
     gt_payload: Dict[str, Any],
     pred_payload: Dict[str, Any],
 ) -> Dict[str, Any]:
+    scene_id  = gt_payload.get("scene_id", "unknown")
+    room_type = get_room_type(gt_payload)
+
+    if is_grid_scene(room_type):
+        # Grid pipeline (classroom / library / office): D3 + D4 + D5 only.
+        # D1 and D2 are not applicable — object matching is not run.
+        dim_1_4 = _evaluate_scene_dims_1_4(gt_payload, pred_payload)
+        dim_5   = evaluate_grid(gt_payload, pred_payload)
+    else:
+        # Non-grid pipeline (living space + meetingroom): D1-D4, no D5.
+        dim_1_4 = _evaluate_scene_dims_1_4(gt_payload, pred_payload)
+        dim_5   = {"applicable": False, "room_type": room_type}
+
     return {
-        "scene_id":       gt_payload.get("scene_id", "unknown"),
-        "room_type":      get_room_type(gt_payload),
-        "dimensions_1_4": _evaluate_scene_dims_1_4(gt_payload, pred_payload),
-        "dimension_5":    evaluate_grid(gt_payload, pred_payload),
+        "scene_id":       scene_id,
+        "room_type":      room_type,
+        "dimensions_1_4": dim_1_4,
+        "dimension_5":    dim_5,
     }
+
 
 
 # ---------------------------------------------------------------------------

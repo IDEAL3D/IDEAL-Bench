@@ -21,7 +21,7 @@ _REPO_ROOT = os.path.dirname(_GENERATION_DIR)
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from configs.constant import canonicalize_asset_category
+from configs.constants import canonicalize_asset_category
 
 from generation_common.scene_geometry import raycast_floor, room_height, world_aabb
 

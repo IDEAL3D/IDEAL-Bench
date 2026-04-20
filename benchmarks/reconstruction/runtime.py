@@ -84,6 +84,8 @@ def is_model_prediction_json(path: Path) -> bool:
     name = path.name
     if name.endswith("_benchmark.json") or name.endswith("_bench.json"):
         return False
+    if name.endswith("_render.json"):
+        return False
     if name in ("manifest.json", "summary.json"):
         return False
     return True

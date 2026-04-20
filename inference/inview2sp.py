@@ -14,7 +14,7 @@ _PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT not in sys.path:
     sys.path.insert(0, _PROJECT)
 
-from configs.constant import canonicalize_asset_category  # noqa: E402
+from configs.constants import canonicalize_asset_category  # noqa: E402
 
 SYSTEM_PROMPT_CATEGORIES_PLACEHOLDER = "{{THIS_ROOM_CONTAINS}}"
 

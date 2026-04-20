@@ -6,9 +6,9 @@ data/*
 result/*
 !result/.gitkeep
 
-# [INTERNAL]api/secrets/: like data/ — only .gitkeep is tracked; ignore keys etc.
-[INTERNAL]api/secrets/*
-![INTERNAL]api/secrets/.gitkeep
+# [INTERNAL]api/: like data/ — only .gitkeep tracked ([[]…[]] = literal brackets in gitignore)
+[[]INTERNAL[]]api/*
+![[]INTERNAL[]]api/.gitkeep
 
 # inference/models/: keep directory in git via .gitkeep; ignore model files/weights
 inference/models/*
