@@ -2,9 +2,17 @@
 data/*
 !data/.gitkeep
 
-# result/: like data/ — only result/.gitkeep is tracked; ignore generated outputs
+# result/: 根目录仅 .gitkeep；inference/ 与 evaluation/ 仅保留空壳（各含 .gitkeep），其余一律忽略
 result/*
 !result/.gitkeep
+!result/inference/
+!result/evaluation/
+
+result/inference/**
+!result/inference/.gitkeep
+
+result/evaluation/**
+!result/evaluation/.gitkeep
 
 # [INTERNAL]api/: like data/ — only .gitkeep tracked ([[]…[]] = literal brackets in gitignore)
 [[]INTERNAL[]]api/*
@@ -13,6 +21,9 @@ result/*
 # inference/models/: keep directory in git via .gitkeep; ignore model files/weights
 inference/models/*
 !inference/models/.gitkeep
+
+# benchmarks/tests/: 本地自用，整目录不上传
+benchmarks/tests/
 
 # Python
 __pycache__/
