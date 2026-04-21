@@ -1,28 +1,71 @@
 #!/usr/bin/env python3
 """
-render.py — Blender render step for the IDEAL reconstruction pipeline.
+render.py - Blender render step for the IDEAL reconstruction pipeline.
 
-Must be executed with a Python interpreter that can ``import bpy`` (e.g. the
-``bpy`` pip package inside a conda environment, or Blender's bundled Python).
+Must be executed with a Python interpreter that can ``import bpy`` (the
+``bpy`` pip package in a conda env, or Blender's bundled Python).
 
-Reads the ``{model_id}_render.json`` written by ``compose.py``, applies the
-predicted object poses to a copy of the original scene, saves
-``{model_id}.blend``, and renders ``{model_id}.png``.  The source
-``scene.blend`` is never modified.
+Reads the ``{model_id}_render.json`` written by compose.py, applies the
+instructions to a copy of the original scene, saves ``{model_id}.blend``,
+and renders ``{model_id}.png``. The source ``scene.blend`` is never
+modified.
 
-Positional arguments (after ``--``)
-------------------------------------
-  blend_src    Path to the original scene.blend
-  render_json  Absolute path to {model_id}_render.json
-  model_id     Stem used for output filenames
-  protocol     Coordinate protocol: must be "floor" (camera not yet supported)
-  output_png   Absolute path for the rendered PNG
+Schema consumed (``{model_id}_render.json``)
+--------------------------------------------
+::
 
-Supported protocols
--------------------
-- ``floor``:  Predicted x, y, yaw, and dimensions are written back; z comes
-              from the GT value already embedded in render_json by compose.py.
-- ``camera``: Not yet implemented. Passing this value exits with an error.
+  {
+    "scene_id":         "...",
+    "model_id":         "...",
+    "room_type":        "...",
+    "is_grid_scene":    bool,
+    "camera_transform": {"delta_deg": int | null},
+
+    "matched": [
+      {"gt_id": "...", "category": "bed",
+       "final_location":   [x, y, z],   # Blender obj.location directly
+       "final_rotation_z": float_deg,   # Blender rotation_euler.z in degrees
+       "final_dimensions": [x, y, z]},  # Blender obj.dimensions directly
+      ...
+    ],
+
+    "hide": [{"gt_id": "...", "category": "..."}, ...],
+
+    "hallucination": [
+      {"pred_category": "sofa",
+       "pred_position": [x, y, z],
+       "pred_dim_mean": float_metres},
+      ...
+    ]
+  }
+
+Responsibilities (this module does NOT compute geometry)
+--------------------------------------------------------
+compose.py already performed the full GT-inverse (pose_inverse.invert_pose
++ wall-mounted Z policy). All render.py needs to do is:
+
+  * matched       -> obj.location / rotation_euler.z / dimensions = final_*
+  * hide          -> obj.hide_render = obj.hide_viewport = True
+  * hallucination -> create a translucent red UV sphere at pred_position
+                     with radius min(pred_dim_mean / 2, HALLUC_MAX_RADIUS)
+
+Objects in the scene that appear in neither list are left untouched. This
+is intentional: non-target objects in grid scenes (e.g. blackboard) and
+any object outside the in-view whitelist should keep their blend-native
+transforms.
+
+CLI
+---
+Positional arguments after ``--`` (matches reconstruct._build_render_cmd)::
+
+    blend_src       Path to the original scene.blend
+    render_json     Path to {model_id}_render.json
+    model_id        Stem used for output filenames
+    protocol        Coordinate protocol; must be "floor" (camera NYI)
+    output_png      Path for the rendered PNG
+    objects_in_view_json  Path to objects_in_view.json (tolerated but
+                          unused: the schema above already tells us which
+                          objects to touch)
 """
 
 from __future__ import annotations
@@ -34,182 +77,183 @@ from pathlib import Path
 from typing import Any
 
 import bpy
-from mathutils import Euler, Vector
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 SUPPORTED_PROTOCOLS = ("floor",)
-PLACEHOLDER_CATEGORY = "placeholder"
+
+# Hallucination spheres: cap the visual size so a model that hallucinates
+# a "3 m wide sofa" does not produce a wall-sized red blob that occludes
+# the rest of the scene. Transparency makes them visible without hiding
+# everything behind them.
+HALLUC_MAX_RADIUS = 0.3   # metres
+HALLUC_ALPHA = 0.5        # 0 = transparent, 1 = opaque
+HALLUC_COLOR_RGB = (1.0, 0.0, 0.0)   # Principled BSDF base color
+HALLUC_MATERIAL_NAME = "ideal_hallucination_red"
 
 
 # ---------------------------------------------------------------------------
-# Geometry helpers
+# Matched: straight writeback
 # ---------------------------------------------------------------------------
 
 
-def _aggregate_mesh_aabb_size(
-    root: bpy.types.Object,
-) -> tuple[float, float, float] | None:
-    """Return world-space AABB extents (W, H, D) by walking the subtree.
+def _apply_matched(entry: dict[str, Any]) -> bool:
+    """Write compose's ``final_*`` fields to the named Blender object.
 
-    Used when ``obj.dimensions`` is near-zero (e.g. EMPTY root objects).
-    Returns ``None`` if no MESH children are found or the resulting box is
-    degenerate.
+    Returns True on success, False if the object is not found in the scene.
     """
-    xmin = ymin = zmin = float("inf")
-    xmax = ymax = zmax = float("-inf")
-    found_mesh = False
+    gt_id = str(entry.get("gt_id", ""))
+    obj = bpy.data.objects.get(gt_id)
+    if obj is None:
+        print(
+            f"[render] WARNING: matched entry {gt_id!r} not found in scene; "
+            f"skipping",
+            file=sys.stderr,
+        )
+        return False
 
-    def _walk(o: bpy.types.Object) -> None:
-        nonlocal xmin, ymin, zmin, xmax, ymax, zmax, found_mesh
-        if o.type == "MESH":
-            found_mesh = True
-            deps = bpy.context.evaluated_depsgraph_get()
-            o_eval = o.evaluated_get(deps)
-            mw = o_eval.matrix_world
-            for corner in o_eval.bound_box:
-                w = mw @ Vector(corner)
-                xmin = min(xmin, w.x); xmax = max(xmax, w.x)
-                ymin = min(ymin, w.y); ymax = max(ymax, w.y)
-                zmin = min(zmin, w.z); zmax = max(zmax, w.z)
-        for child in o.children:
-            _walk(child)
+    loc = entry.get("final_location") or [0.0, 0.0, 0.0]
+    rot_z_deg = float(entry.get("final_rotation_z", 0.0))
+    dim = entry.get("final_dimensions") or [1.0, 1.0, 1.0]
 
-    _walk(root)
-    if not found_mesh:
-        return None
-    dx, dy, dz = xmax - xmin, ymax - ymin, zmax - zmin
-    if dx <= 1e-8 or dy <= 1e-8 or dz <= 1e-8:
-        return None
-    return dx, dy, dz
+    # Ensure visible (may have been hidden by a previous pass).
+    obj.hide_viewport = False
+    obj.hide_render = False
 
+    # Write in a stable order: rotation, then location, then dimensions.
+    # bpy's obj.dimensions setter internally rescales based on the current
+    # rotation-applied bounding box, so rotation must already be written.
+    obj.rotation_mode = "XYZ"
+    obj.rotation_euler[2] = math.radians(rot_z_deg)
 
-def _apply_pose(obj: bpy.types.Object, entry: dict[str, Any]) -> None:
-    """Write rotation, scale, and translation from *entry* onto *obj*.
+    obj.location = (float(loc[0]), float(loc[1]), float(loc[2]))
 
-    Rotation (yaw) is applied first, then scale is adjusted to match
-    predicted dimensions, then the world-space origin is set to the
-    predicted position (which already contains the GT z from compose.py).
-    """
-    pos = entry.get("position") or [0.0, 0.0, 0.0]
-    target = Vector((float(pos[0]), float(pos[1]), float(pos[2])))
+    # Guard against degenerate dims (would zero obj.scale and strand the
+    # object invisibly on rerun).
+    dx = max(float(dim[0]), 1e-4)
+    dy = max(float(dim[1]), 1e-4)
+    dz = max(float(dim[2]), 1e-4)
+    try:
+        obj.dimensions = (dx, dy, dz)
+    except (AttributeError, RuntimeError) as exc:
+        # Some EMPTY / non-mesh objects don't expose a writable dimensions
+        # property. compose shouldn't be producing matches for these, but
+        # we keep the render alive if it happens.
+        print(
+            f"[render] WARNING: cannot set dimensions on {gt_id!r} "
+            f"({type(obj).__name__}): {exc}",
+            file=sys.stderr,
+        )
 
-    raw_dim = entry.get("dimensions") or [1.0, 1.0, 1.0]
-    target_dim = Vector((
-        max(float(raw_dim[0]), 1e-4),
-        max(float(raw_dim[1]), 1e-4),
-        max(float(raw_dim[2]), 1e-4),
-    ))
-
-    yaw = entry.get("rotation_yaw")
-    if yaw is not None:
-        obj.rotation_mode = "XYZ"
-        obj.rotation_euler = Euler((0.0, 0.0, math.radians(float(yaw))), "XYZ")
-
-    bpy.context.view_layer.update()
-
-    # Determine current extents (fall back to subtree AABB for EMPTY roots)
-    d = obj.dimensions
-    if max(float(d.x), float(d.y), float(d.z)) < 1e-6:
-        agg = _aggregate_mesh_aabb_size(obj)
-        if agg is not None:
-            dx, dy, dz = agg
-            print(
-                f"[render] {obj.name!r}: obj.dimensions ~ 0, using subtree AABB "
-                f"({dx:.4f}, {dy:.4f}, {dz:.4f})",
-                file=sys.stderr,
-            )
-        else:
-            print(
-                f"[render] WARNING: {obj.name!r} dimensions ~ 0 and no MESH "
-                f"children found — skipping scale",
-                file=sys.stderr,
-            )
-            mw = obj.matrix_world.copy()
-            mw.translation = target
-            obj.matrix_world = mw
-            bpy.context.view_layer.update()
-            return
-    else:
-        dx, dy, dz = float(d.x), float(d.y), float(d.z)
-
-    for i, current in enumerate((dx, dy, dz)):
-        if current > 1e-8:
-            obj.scale[i] *= target_dim[i] / current
-
-    bpy.context.view_layer.update()
-
-    mw = obj.matrix_world.copy()
-    mw.translation = target
-    obj.matrix_world = mw
-    bpy.context.view_layer.update()
+    return True
 
 
 # ---------------------------------------------------------------------------
-# Scene-level helpers
+# Hide: unmatched GT in-view objects
 # ---------------------------------------------------------------------------
 
 
-def _geometry_all_null(entry: dict[str, Any]) -> bool:
-    return (
-        entry.get("position") is None
-        and entry.get("dimensions") is None
-        and entry.get("rotation_yaw") is None
-    )
+def _apply_hide(entry: dict[str, Any]) -> bool:
+    gt_id = str(entry.get("gt_id", ""))
+    obj = bpy.data.objects.get(gt_id)
+    if obj is None:
+        print(
+            f"[render] WARNING: hide entry {gt_id!r} not found in scene; "
+            f"skipping",
+            file=sys.stderr,
+        )
+        return False
+    obj.hide_viewport = True
+    obj.hide_render = True
+    return True
 
 
-def _create_placeholder_sphere(entry: dict[str, Any]) -> bpy.types.Object | None:
-    """Create a red unit-sphere to represent a hallucinated object.
+# ---------------------------------------------------------------------------
+# Hallucination: translucent red UV spheres
+# ---------------------------------------------------------------------------
 
-    Default radius is 0.5 (1 m diameter). If *entry* contains valid
-    ``dimensions``, ``_apply_pose`` will scale it accordingly.
-    Entries with all-null geometry are skipped (no position to place at).
+
+def _get_or_make_hallucination_material() -> bpy.types.Material:
+    """Return (creating if needed) the shared translucent-red material.
+
+    We use Principled BSDF with Alpha < 1 so the sphere renders
+    translucent in Cycles/Eevee without depending on viewport shading
+    tricks.
     """
-    pid = str(entry.get("id") or "placeholder")
-    if _geometry_all_null(entry):
-        print(f"[render] placeholder {pid!r}: geometry all null, skipping", file=sys.stderr)
-        return None
+    mat = bpy.data.materials.get(HALLUC_MATERIAL_NAME)
+    if mat is not None:
+        return mat
+
+    mat = bpy.data.materials.new(HALLUC_MATERIAL_NAME)
+    mat.use_nodes = True
+    mat.blend_method = "BLEND"   # Eevee alpha blending; harmless in Cycles
+    nt = mat.node_tree
+    bsdf = nt.nodes.get("Principled BSDF")
+    if bsdf is None:
+        # Fall back gracefully if the default node got replaced.
+        bsdf = nt.nodes.new("ShaderNodeBsdfPrincipled")
+        out = nt.nodes.get("Material Output") or nt.nodes.new("ShaderNodeOutputMaterial")
+        nt.links.new(bsdf.outputs["BSDF"], out.inputs["Surface"])
+
+    # Base color and alpha. Input names are stable across Blender 3.x/4.x
+    # for these two sockets; we guard with .get() just in case.
+    base_color = bsdf.inputs.get("Base Color")
+    if base_color is not None:
+        r, g, b = HALLUC_COLOR_RGB
+        base_color.default_value = (r, g, b, 1.0)
+    alpha = bsdf.inputs.get("Alpha")
+    if alpha is not None:
+        alpha.default_value = HALLUC_ALPHA
+
+    return mat
+
+
+def _create_hallucination_sphere(entry: dict[str, Any], seq: int) -> bool:
+    """Spawn one translucent red sphere for a hallucinated prediction.
+
+    Position comes from ``entry["pred_position"]`` (world-frame, already
+    through camera_transform in compose). Radius is the capped half of
+    ``pred_dim_mean``.
+    """
+    pos = entry.get("pred_position")
+    if not isinstance(pos, list) or len(pos) < 3:
+        print(
+            f"[render] WARNING: hallucination entry missing pred_position; "
+            f"skipping: {entry!r}",
+            file=sys.stderr,
+        )
+        return False
+
+    raw_mean = float(entry.get("pred_dim_mean", 0.3))
+    radius = min(raw_mean / 2.0, HALLUC_MAX_RADIUS)
+    radius = max(radius, 0.02)   # keep it visible at least
 
     bpy.ops.object.select_all(action="DESELECT")
-    bpy.ops.mesh.primitive_uv_sphere_add(radius=0.5, location=(0.0, 0.0, 0.0))
+    bpy.ops.mesh.primitive_uv_sphere_add(
+        radius=radius,
+        location=(float(pos[0]), float(pos[1]), float(pos[2])),
+    )
     obj = bpy.context.view_layer.objects.active
     if obj is None:
-        return None
-    obj.name = pid
+        print("[render] WARNING: failed to spawn hallucination sphere", file=sys.stderr)
+        return False
 
-    # Red material for easy visual identification
-    mat = bpy.data.materials.get("placeholder_red")
-    if mat is None:
-        mat = bpy.data.materials.new("placeholder_red")
-    mat.diffuse_color = (1.0, 0.0, 0.0, 1.0)
+    cat = str(entry.get("pred_category") or "hallucination")
+    obj.name = f"ideal_hallucination_{seq:02d}_{cat}"
+
+    mat = _get_or_make_hallucination_material()
     if obj.data.materials:
         obj.data.materials[0] = mat
     else:
         obj.data.materials.append(mat)
 
-    col = bpy.data.collections.get("unique_assets")
-    if col is not None:
-        for c in list(obj.users_collection):
-            c.objects.unlink(obj)
-        if obj.name not in col.objects:
-            col.objects.link(obj)
-
-    bpy.context.view_layer.update()
-    _apply_pose(obj, entry)
-    return obj
-
-
-def _apply_entry(obj: bpy.types.Object, entry: dict[str, Any]) -> None:
-    """Apply a render-json entry to an existing scene object."""
-    if _geometry_all_null(entry):
-        obj.hide_viewport = True
-        obj.hide_render = True
-        return
-    obj.hide_viewport = False
-    obj.hide_render = False
-    _apply_pose(obj, entry)
+    return True
 
 
 # ---------------------------------------------------------------------------
-# Main render function
+# Main
 # ---------------------------------------------------------------------------
 
 
@@ -232,45 +276,56 @@ def apply_render_json_and_export(
 
     render_json = render_json.resolve()
     with open(render_json, encoding="utf-8") as f:
-        pseudo: dict[str, Any] = json.load(f)
+        payload: dict[str, Any] = json.load(f)
     print(f"[render] loaded {render_json}", file=sys.stderr)
+
+    matched = payload.get("matched") or []
+    hide = payload.get("hide") or []
+    halluc = payload.get("hallucination") or []
+    print(
+        f"[render] payload: matched={len(matched)} "
+        f"hide={len(hide)} hallucination={len(halluc)}",
+        file=sys.stderr,
+    )
 
     blend_src = blend_src.resolve()
     if not blend_src.is_file():
         print(f"[render] source .blend not found: {blend_src}", file=sys.stderr)
         sys.exit(1)
-
     bpy.ops.wm.open_mainfile(filepath=str(blend_src))
 
-    objects_payload: list[dict[str, Any]] = (pseudo.get("scene") or {}).get("objects") or []
+    # Apply in a stable order: matched first (may undo a previous hide),
+    # then hide, then spawn hallucinations.
+    n_matched = 0
+    for entry in matched:
+        if isinstance(entry, dict) and _apply_matched(entry):
+            n_matched += 1
 
-    for entry in objects_payload:
-        if not isinstance(entry, dict):
-            continue
-        oid = entry.get("id")
-        if oid is None:
-            continue
-        oid = str(oid)
-        cat = (entry.get("category") or "").strip().lower()
+    n_hidden = 0
+    for entry in hide:
+        if isinstance(entry, dict) and _apply_hide(entry):
+            n_hidden += 1
 
-        ob = bpy.data.objects.get(oid)
-        if ob is None:
-            if cat == PLACEHOLDER_CATEGORY:
-                _create_placeholder_sphere(entry)
-                print(f"[render] created placeholder sphere: {oid!r}", file=sys.stderr)
-            else:
-                print(f"[render] WARNING: object {oid!r} not in scene and not a placeholder, skipping", file=sys.stderr)
-            continue
+    n_halluc = 0
+    for seq, entry in enumerate(halluc, start=1):
+        if isinstance(entry, dict) and _create_hallucination_sphere(entry, seq):
+            n_halluc += 1
 
-        _apply_entry(ob, entry)
+    bpy.context.view_layer.update()
 
-    # Save scene copy (source .blend is untouched)
+    print(
+        f"[render] summary: matched_written={n_matched} "
+        f"hidden={n_hidden} hallucination_spheres={n_halluc}",
+        file=sys.stderr,
+    )
+
+    # Save scene copy (source .blend is untouched).
     out_dir = render_json.parent
     blend_out = out_dir / f"{model_id}.blend"
     bpy.ops.wm.save_as_mainfile(filepath=str(blend_out))
     print(f"[render] scene saved (source unchanged): {blend_out}", file=sys.stderr)
 
-    # Render
+    # Render.
     scene = bpy.context.scene
     if scene.camera is None:
         cams = [o for o in bpy.data.objects if o.type == "CAMERA"]
@@ -301,10 +356,21 @@ def _argv_after_dd() -> list[str]:
 
 def main() -> None:
     args = _argv_after_dd()
-    if len(args) != 5:
-        print("usage: render.py -- blend_src render_json model_id protocol output_png", file=sys.stderr)
+    # Accept either 5 args (new) or 6 args (legacy, with trailing
+    # objects_in_view.json that we ignore). This lets reconstruct.py keep
+    # its existing command builder without breaking old callers.
+    if len(args) == 5:
+        blend_src, rj, model_id, protocol, out_png = args
+    elif len(args) == 6:
+        blend_src, rj, model_id, protocol, out_png, _in_view = args
+    else:
+        print(
+            "usage: render.py -- blend_src render_json model_id protocol output_png "
+            "[objects_in_view_json]",
+            file=sys.stderr,
+        )
         sys.exit(2)
-    blend_src, rj, model_id, protocol, out_png = args
+
     apply_render_json_and_export(
         blend_src=Path(blend_src),
         render_json=Path(rj),

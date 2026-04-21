@@ -1,0 +1,255 @@
+{
+  "scene": {
+    "room": {
+      "type": "livingroom",
+      "size": [
+        5.25,
+        6.88,
+        3.02
+      ],
+      "asset_count": 16
+    },
+    "objects": [
+      {
+        "id": "coffee_table_01",
+        "category": "coffee_table",
+        "position": [
+          -0.4,
+          0.12,
+          0.33
+        ],
+        "dimensions": [
+          1.022,
+          0.574,
+          0.41
+        ],
+        "rotation_yaw": 0
+      },
+      {
+        "id": "coffee_table_02",
+        "category": "coffee_table",
+        "position": [
+          0.2,
+          1.12,
+          0.34
+        ],
+        "dimensions": [
+          0.742,
+          0.602,
+          0.42
+        ],
+        "rotation_yaw": 180
+      },
+      {
+        "id": "floor_lamp_01",
+        "category": "floor_lamp",
+        "position": [
+          2.43,
+          3.11,
+          0.76
+        ],
+        "dimensions": [
+          0.273,
+          0.273,
+          1.27
+        ],
+        "rotation_yaw": null
+      },
+      {
+        "id": "large_plant_container_01",
+        "category": "large_plant_container",
+        "position": [
+          -2.02,
+          0.83,
+          0.73
+        ],
+        "dimensions": [
+          0.539,
+          0.434,
+          1.2
+        ],
+        "rotation_yaw": null
+      },
+      {
+        "id": "large_shelf_01",
+        "category": "large_shelf",
+        "position": [
+          -2.34,
+          1.71,
+          1.12
+        ],
+        "dimensions": [
+          0.385,
+          0.294,
+          1.99
+        ],
+        "rotation_yaw": 270
+      },
+      {
+        "id": "rug_01",
+        "category": "rug",
+        "position": [
+          -0.14,
+          0.31,
+          0.13
+        ],
+        "dimensions": [
+          1.96,
+          1.904,
+          0.01
+        ],
+        "rotation_yaw": null
+      },
+      {
+        "id": "side_table_01",
+        "category": "side_table",
+        "position": [
+          2.13,
+          -0.19,
+          0.38
+        ],
+        "dimensions": [
+          0.364,
+          0.364,
+          0.49
+        ],
+        "rotation_yaw": 0
+      },
+      {
+        "id": "side_table_02",
+        "category": "side_table",
+        "position": [
+          1.54,
+          -0.19,
+          0.41
+        ],
+        "dimensions": [
+          0.378,
+          0.378,
+          0.55
+        ],
+        "rotation_yaw": 0
+      },
+      {
+        "id": "side_table_03",
+        "category": "side_table",
+        "position": [
+          1.84,
+          1.83,
+          0.42
+        ],
+        "dimensions": [
+          0.42,
+          0.42,
+          0.57
+        ],
+        "rotation_yaw": 0
+      },
+      {
+        "id": "simple_desk_01",
+        "category": "simple_desk",
+        "position": [
+          -1.29,
+          2.98,
+          0.48
+        ],
+        "dimensions": [
+          0.994,
+          0.455,
+          0.71
+        ],
+        "rotation_yaw": 180
+      },
+      {
+        "id": "single_cabinet_01",
+        "category": "single_cabinet",
+        "position": [
+          2.02,
+          3.09,
+          0.98
+        ],
+        "dimensions": [
+          0.245,
+          0.259,
+          1.71
+        ],
+        "rotation_yaw": 180
+      },
+      {
+        "id": "single_cabinet_02",
+        "category": "single_cabinet",
+        "position": [
+          2.34,
+          2.16,
+          0.74
+        ],
+        "dimensions": [
+          0.364,
+          0.259,
+          1.22
+        ],
+        "rotation_yaw": 90
+      },
+      {
+        "id": "sofa_01",
+        "category": "sofa",
+        "position": [
+          1.66,
+          0.8,
+          0.57
+        ],
+        "dimensions": [
+          0.945,
+          1.022,
+          0.89
+        ],
+        "rotation_yaw": 90
+      },
+      {
+        "id": "sofa_02",
+        "category": "sofa",
+        "position": [
+          1.53,
+          -1.66,
+          0.64
+        ],
+        "dimensions": [
+          1.47,
+          1.19,
+          1.03
+        ],
+        "rotation_yaw": 90
+      },
+      {
+        "id": "swivel_chair_01",
+        "category": "swivel_chair",
+        "position": [
+          -0.9,
+          2.34,
+          0.62
+        ],
+        "dimensions": [
+          0.343,
+          0.357,
+          0.98
+        ],
+        "rotation_yaw": 0
+      },
+      {
+        "id": "t_v_stand_01",
+        "category": "t_v_stand",
+        "position": [
+          0.67,
+          3.08,
+          0.36
+        ],
+        "dimensions": [
+          1.477,
+          0.315,
+          0.46
+        ],
+        "rotation_yaw": 180
+      }
+    ]
+  }
+}

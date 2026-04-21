@@ -1,0 +1,150 @@
+{
+  "scene": {
+    "room": {
+      "type": "diningroom",
+      "size": [
+        4.25,
+        4.38,
+        3.26
+      ],
+      "asset_count": 9
+    },
+    "objects": [
+      {
+        "id": "beverage_fridge_01",
+        "category": "beverage_fridge",
+        "position": [
+          -1.32,
+          0.46,
+          0.77
+        ],
+        "dimensions": [
+          1.09,
+          1.19,
+          1.29
+        ],
+        "rotation_yaw": 180
+      },
+      {
+        "id": "cell_shelf_01",
+        "category": "cell_shelf",
+        "position": [
+          0.6,
+          0.89,
+          0.55
+        ],
+        "dimensions": [
+          2.03,
+          0.33,
+          0.86
+        ],
+        "rotation_yaw": 180
+      },
+      {
+        "id": "chair_01",
+        "category": "chair",
+        "position": [
+          0.91,
+          -1.02,
+          0.57
+        ],
+        "dimensions": [
+          0.52,
+          0.55,
+          0.87
+        ],
+        "rotation_yaw": 0
+      },
+      {
+        "id": "chair_02",
+        "category": "chair",
+        "position": [
+          -0.02,
+          -0.37,
+          0.57
+        ],
+        "dimensions": [
+          0.52,
+          0.55,
+          0.87
+        ],
+        "rotation_yaw": 270
+      },
+      {
+        "id": "rug_01",
+        "category": "rug",
+        "position": [
+          -0.08,
+          -1.08,
+          0.13
+        ],
+        "dimensions": [
+          2.95,
+          2.95,
+          0.01
+        ],
+        "rotation_yaw": null
+      },
+      {
+        "id": "single_cabinet_01",
+        "category": "single_cabinet",
+        "position": [
+          1.86,
+          0.83,
+          1.07
+        ],
+        "dimensions": [
+          0.35,
+          0.35,
+          1.89
+        ],
+        "rotation_yaw": 90
+      },
+      {
+        "id": "single_cabinet_02",
+        "category": "single_cabinet",
+        "position": [
+          1.85,
+          0.21,
+          1.04
+        ],
+        "dimensions": [
+          0.59,
+          0.36,
+          1.84
+        ],
+        "rotation_yaw": 90
+      },
+      {
+        "id": "table_dining_01",
+        "category": "table_dining",
+        "position": [
+          0.82,
+          -0.19,
+          0.5
+        ],
+        "dimensions": [
+          0.95,
+          0.96,
+          0.75
+        ],
+        "rotation_yaw": 180
+      },
+      {
+        "id": "wall_art_01",
+        "category": "wall_art",
+        "position": [
+          0.26,
+          1.11,
+          1.82
+        ],
+        "dimensions": [
+          1.23,
+          0.02,
+          0.54
+        ],
+        "rotation_yaw": 180
+      }
+    ]
+  }
+}

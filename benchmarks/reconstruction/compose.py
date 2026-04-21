@@ -1,92 +1,111 @@
 #!/usr/bin/env python3
 """
-compose.py — Assemble the render payload for a single scene.
+compose.py — Build a render instruction payload for one (scene, model) pair.
 
-Data flow (standard scenes — living space / meeting room)
----------------------------------------------------------
-  objects_in_view.json        GT.json
-  (id, category,          (id, position,
-   pixel stats)           dimensions, yaw, …)
-        |                       |
-        +------- join on id ----+
-                  |
-          gt_objects_with_pos
-                  |
-     match_objects()  [category-wise Hungarian on XY distance]
-                  |
-    MatchedPair list  +  unmatched sets
-                  |
-   _apply_overlay: write pred x,y,dims,yaw (keep GT z)
-                  |
-   _merge_with_gt: overlay onto full GT document
-                  |
-        {model_id}_render.json
+Pipeline (replaces the legacy "overlay pred onto GT" design)
+------------------------------------------------------------
 
-Data flow (grid scenes — classroom / library / office)
-------------------------------------------------------
-Same join step, but matching is replaced by positional write-back:
+  GT.json  ─┐
+            │   filter by
+  objects_in_view.json ──► in-view GT list
+            │
+  <model>.json (pred, camera frame) ─► camera_transform ─► pred (world)
+            │
+            ▼
+  Matching (category-wise Hungarian)  ──or──  grid-positional zip
+            │
+            ▼
+  For each matched pair:
+     read (location, dimensions) from scene.blend     [bpy]
+     pose_inverse.invert_pose(pred, gt, original, cat)
+     apply wall-mounted / floor-standing Z policy
+            │
+            ▼
+  <model>_render.json   (instruction payload for render.py)
 
-  For each grid target category (e.g. "desk" in classroom):
-    - Take in-view GT objects of that category (GT order).
-    - Take pred objects of that category (pred JSON order).
-    - zip() them one-to-one: write pred x,y,dims,yaw → GT slot (keep GT z).
-    - Pred surplus → placeholder spheres.
-    - GT surplus  → nullified (hidden in render).
+Output schema (``<model>_render.json``)
+---------------------------------------
+::
 
-  Non-target categories in grid scenes → standard Hungarian matching.
+  {
+    "scene_id":  "...",
+    "model_id":  "...",
+    "room_type": "bedroom" | "classroom" | ...,
+    "is_grid_scene": bool,
+    "camera_transform": {"delta_deg": int | null},
 
-Z-coordinate convention
------------------------
-All objects keep the GT z value. Predicted z is never written back.
+    "matched": [
+      {"gt_id": "...", "category": "bed",
+       "final_location":   [x, y, z],
+       "final_rotation_z": float_deg,
+       "final_dimensions": [x, y, z]}, ...
+    ],
 
-Scene routing
--------------
-Determined by ``scene_config.is_grid_scene(room_type)``.
-Room type is read from GT.json ``scene.room.type``.
+    "hide": [
+      {"gt_id": "...", "category": "..."}, ...
+    ],
+
+    "hallucination": [
+      {"pred_category": "sofa",
+       "pred_position": [x, y, z],       # world frame
+       "pred_dim_mean": float_metres},   # render.py caps the sphere radius
+      ...
+    ]
+  }
+
+``matched`` entries are the only ones that cause geometry overrides in
+render.py. ``hide`` entries are the in-view GT objects that the model failed
+to predict (rendered with ``hide_render=True``). ``hallucination`` entries
+are pred objects with no GT counterpart (rendered as translucent red spheres
+at the predicted XYZ position).
+
+Z-coordinate policy
+-------------------
+For floor-standing categories, ``final_location[2]`` is forced to the
+original ``obj.location.z`` read from scene.blend. This respects the
+per-asset origin-z quirks of Infinigen (see engineering notes §Z 轴处理).
+Wall-mounted categories (``mirror``, ``wall_art``) keep the value produced
+by ``pose_inverse``.
+
+bpy requirement
+---------------
+This module opens scene.blend to read original pose data. The process must
+be able to ``import bpy``. ``reconstruct.py`` already enforces this via
+``runtime.ensure_bpy_importable`` before spawning compose.
 """
 
 from __future__ import annotations
 
 import argparse
-import copy
 import json
-import math
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
-# Ensure the repository root (parent of 'benchmarks/') is on sys.path so that
-# 'import benchmarks.*' works regardless of how this script is invoked
-# (direct subprocess call, python -m, etc.).
-_REPO_ROOT = Path(__file__).resolve().parents[2]  # …/IDEAL/
+# Repository root on sys.path so "benchmarks.xxx" imports work.
+_REPO_ROOT = Path(__file__).resolve().parents[2]  # .../IDEAL/
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from benchmarks.match_objects import extract_objects, match_objects
-from benchmarks.scene_config import GRID_TARGET_CATEGORIES, is_grid_scene
+from benchmarks.camera_transform import transform_pred_scene
+from benchmarks.match_objects import MatchedPair, extract_objects, match_objects
+from benchmarks.scene_config import (
+    GRID_TARGET_CATEGORIES,
+    is_grid_scene,
+    is_wall_mounted,
+)
+
+from benchmarks.reconstruction.pose_inverse import invert_pose
 
 
 # ---------------------------------------------------------------------------
-# Loading helpers
+# JSON loaders
 # ---------------------------------------------------------------------------
 
 
-def _load_objects_in_view(info_path: Path) -> list[dict[str, Any]]:
-    with open(info_path, encoding="utf-8") as f:
-        info: dict[str, Any] = json.load(f)
-    objs = info.get("objects")
-    if not isinstance(objs, list):
-        raise ValueError(f"{info_path}: missing or invalid 'objects' list")
-    return objs
-
-
-def _build_gt_index(gt_data: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    gt_objs = extract_objects(gt_data)
-    return {
-        str(o["id"]): o
-        for o in gt_objs
-        if isinstance(o, dict) and o.get("id") is not None
-    }
+def _load_json(path: Path) -> dict[str, Any]:
+    with open(path.resolve(), encoding="utf-8") as f:
+        return json.load(f)
 
 
 def _get_room_type(gt_data: dict[str, Any]) -> str | None:
@@ -96,258 +115,207 @@ def _get_room_type(gt_data: dict[str, Any]) -> str | None:
         return None
 
 
-def _join_inview_with_gt(
-    inview_objs: list[dict[str, Any]],
-    gt_index: dict[str, dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Enrich in-view objects with GT geometry (position, dimensions, yaw).
-
-    Returns entries in the same order as *inview_objs*. Objects whose id is
-    not found in GT are skipped with a warning.
-    """
-    result: list[dict[str, Any]] = []
-    for iv in inview_objs:
-        oid = str(iv.get("id", ""))
-        gt_entry = gt_index.get(oid)
-        if gt_entry is None:
-            print(
-                f"[compose] WARNING: in-view object {oid!r} not found in GT — skipping",
-                file=sys.stderr,
-            )
-            continue
-        merged = copy.deepcopy(gt_entry)
-        merged["actual_pixels"] = iv.get("actual_pixels")
-        merged["truncation_ratio"] = iv.get("truncation_ratio")
-        merged["near_edge"] = iv.get("near_edge")
-        result.append(merged)
-    return result
-
-
-
-
-# Camera coordinate transform is handled by the shared module.
-# benchmarks/camera_transform.py is the single source of truth for both
-# reconstruction (compose.py) and evaluation (metrics.py).
-from benchmarks.camera_transform import transform_pred_scene as _ct_transform_pred_scene
-
-# ---------------------------------------------------------------------------
-# Geometry write-back primitives
-# ---------------------------------------------------------------------------
-
-
 def _safe_category(obj: dict[str, Any]) -> str:
     return str(obj.get("category", "")).strip().lower()
 
 
-def _nullify_geometry(obj: dict[str, Any]) -> None:
-    obj["position"] = None
-    obj["dimensions"] = None
-    obj["rotation_yaw"] = None
+def _filter_in_view(
+    gt_objects: list[dict[str, Any]],
+    inview_ids: set[str],
+) -> list[dict[str, Any]]:
+    """Return the subset of ``gt_objects`` whose id is in ``inview_ids``.
+
+    Order is preserved from GT.json so downstream grid zip-alignment matches
+    the convention documented in scene_config.
+    """
+    return [o for o in gt_objects if str(o.get("id", "")) in inview_ids]
 
 
-def _placeholder_id(seq: int) -> str:
-    return f"placeholder_{seq:02d}" if seq < 100 else f"placeholder_{seq}"
+# ---------------------------------------------------------------------------
+# scene.blend reader (bpy)
+# ---------------------------------------------------------------------------
 
 
-def _make_placeholder(pred_obj: dict[str, Any], seq: int) -> dict[str, Any]:
-    out = copy.deepcopy(pred_obj)
-    out["id"] = _placeholder_id(seq)
-    out["category"] = "placeholder"
+def _read_original_poses(
+    blend_path: Path,
+    ids_of_interest: Iterable[str],
+) -> dict[str, dict[str, list[float]]]:
+    """Open ``blend_path`` with bpy and read (location, dimensions) for each id.
+
+    Only the ids we actually need are pulled. Returns::
+
+        {gt_id: {"location":   [x, y, z],
+                 "dimensions": [x, y, z]}, ...}
+
+    Objects not found in the blend are omitted (caller logs a warning).
+    """
+    import bpy  # type: ignore[import-not-found]
+
+    bpy.ops.wm.open_mainfile(filepath=str(blend_path.resolve()))
+
+    wanted = set(ids_of_interest)
+    out: dict[str, dict[str, list[float]]] = {}
+    for oid in wanted:
+        obj = bpy.data.objects.get(oid)
+        if obj is None:
+            continue
+        loc = obj.location
+        dim = obj.dimensions
+        out[oid] = {
+            "location":   [float(loc.x),  float(loc.y),  float(loc.z)],
+            "dimensions": [float(dim.x),  float(dim.y),  float(dim.z)],
+        }
     return out
 
 
-def _apply_overlay(gt_obj: dict[str, Any], pred_obj: dict[str, Any]) -> None:
-    """Write pred x, y, dimensions, yaw into *gt_obj*. GT z is always kept."""
-    pp = pred_obj.get("position")
-    cp = gt_obj.get("position")
-    if not isinstance(pp, list) or len(pp) < 2:
-        raise ValueError(
-            f"Predicted object missing valid position (need at least x, y): "
-            f"id={pred_obj.get('id')!r} category={pred_obj.get('category')!r}"
-        )
-    gt_z = cp[2] if isinstance(cp, list) and len(cp) >= 3 else 0.0
-    gt_obj["position"] = [float(pp[0]), float(pp[1]), float(gt_z)]
-
-    dim = pred_obj.get("dimensions")
-    if not isinstance(dim, list) or len(dim) < 3:
-        raise ValueError(
-            f"Predicted object missing valid dimensions (need 3 values): "
-            f"id={pred_obj.get('id')!r} category={pred_obj.get('category')!r}"
-        )
-    gt_obj["dimensions"] = [float(dim[0]), float(dim[1]), float(dim[2])]
-
-    if "rotation_yaw" in pred_obj:
-        gt_obj["rotation_yaw"] = pred_obj["rotation_yaw"]
-
-
-def _apply_overlay_grid(gt_obj: dict[str, Any], pred_obj: dict[str, Any]) -> None:
-    """Write pred x, y, and yaw into *gt_obj*. GT z and dimensions are kept.
-
-    Used for grid target objects (desk, chair, library_block, ...) where asset
-    dimensions are uniform and should not be overridden by model predictions.
-    Only XY position and orientation matter for the grid soft metric.
-    """
-    pp = pred_obj.get("position")
-    cp = gt_obj.get("position")
-    if not isinstance(pp, list) or len(pp) < 2:
-        raise ValueError(
-            f"Predicted object missing valid position (need at least x, y): "
-            f"id={pred_obj.get('id')!r} category={pred_obj.get('category')!r}"
-        )
-    gt_z = cp[2] if isinstance(cp, list) and len(cp) >= 3 else 0.0
-    gt_obj["position"] = [float(pp[0]), float(pp[1]), float(gt_z)]
-    # dimensions intentionally not written -- GT asset size is preserved
-
-    if "rotation_yaw" in pred_obj:
-        gt_obj["rotation_yaw"] = pred_obj["rotation_yaw"]
-
-
 # ---------------------------------------------------------------------------
-# Standard matching (living space / meeting room)
+# Matching dispatchers
 # ---------------------------------------------------------------------------
 
 
-def _apply_matches(
-    inview_with_gt: list[dict[str, Any]],
-    pred: dict[str, Any],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Hungarian matching for standard scenes.
-
-    Returns (updated inview list, placeholder list).
-    """
-    pred_objs = extract_objects(pred)
-    matched, _unmatched_gt, unmatched_pred = match_objects(inview_with_gt, pred_objs)
-
-    matched_indices: set[int] = set()
-    for pair in matched:
-        _apply_overlay(inview_with_gt[pair.gt_idx], pred_objs[pair.pred_idx])
-        matched_indices.add(pair.gt_idx)
-
-    for i, obj in enumerate(inview_with_gt):
-        if i not in matched_indices:
-            _nullify_geometry(obj)
-
-    placeholders: list[dict[str, Any]] = []
-    for seq, pj in enumerate(sorted(unmatched_pred), start=1):
-        ph = _make_placeholder(pred_objs[pj], seq)
-        placeholders.append(ph)
-        print(
-            f"[compose] Hallucinated prediction — appending placeholder: "
-            f"{ph['id']} (category={pred_objs[pj].get('category')!r})",
-            file=sys.stderr,
-        )
-
-    return inview_with_gt, placeholders
+def _match_non_grid(
+    gt_in_view: list[dict[str, Any]],
+    pred_objs: list[dict[str, Any]],
+) -> tuple[list[MatchedPair], set[int], set[int]]:
+    """Hungarian matching (living space / meeting room / …)."""
+    return match_objects(gt_in_view, pred_objs)
 
 
-# ---------------------------------------------------------------------------
-# Grid matching (classroom / library / office)
-# ---------------------------------------------------------------------------
-
-
-def _apply_grid_matches(
-    inview_with_gt: list[dict[str, Any]],
-    pred: dict[str, Any],
+def _match_grid(
+    gt_in_view: list[dict[str, Any]],
+    pred_objs: list[dict[str, Any]],
     room_type: str,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Positional write-back for grid scenes.
+) -> tuple[list[MatchedPair], set[int], set[int]]:
+    """Positional zip matching on grid target categories only.
 
-    For each grid target category (e.g. desk/chair in classroom):
-      - GT in-view objects (GT order) are zipped with pred objects (pred JSON
-        order) one-to-one: pred x,y,dims,yaw → GT slot (GT z kept).
-      - Pred surplus → placeholder spheres.
-      - GT surplus   → nullified (hidden in render).
+    Non-target in-view GT objects (e.g. blackboard, teacher's desk) are
+    simply left unmatched — they will not be hidden, because render.py
+    treats them as untouched.  We indicate this by NOT adding them to any
+    of (matched, unmatched_gt). Callers should treat unmatched_gt as
+    "in-view GT that the model failed to place" for target categories only.
 
-    Non-target categories (e.g. blackboard, teacher's desk) are left
-    completely untouched — their GT geometry is preserved as-is. This keeps
-    the rendered scene stable for judge VLM scoring without introducing
-    distortion from potentially inaccurate model predictions for these objects.
-    Non-target pred objects are silently ignored (they are irrelevant to the
-    grid soft metric).
-
-    Returns (updated inview list, placeholder list).
+    Pred objects in target categories with no GT slot → unmatched_pred.
+    Pred objects in non-target categories → silently ignored (irrelevant
+    to the grid soft metric).
     """
-    pred_objs = extract_objects(pred)
-    target_cats = GRID_TARGET_CATEGORIES.get(room_type, frozenset())
+    targets = GRID_TARGET_CATEGORIES.get(room_type, frozenset())
 
-    # Separate grid targets from non-targets in the in-view GT list
-    target_inview: list[tuple[int, dict[str, Any]]] = []  # (original index, obj)
-
-    for i, obj in enumerate(inview_with_gt):
-        if _safe_category(obj) in target_cats:
-            target_inview.append((i, obj))
-    # Non-target in-view objects are intentionally not collected:
-    # they stay untouched in inview_with_gt (GT geometry preserved).
-
-    # Collect target pred objects in JSON order
-    target_pred: list[dict[str, Any]] = [
-        obj for obj in pred_objs if _safe_category(obj) in target_cats
+    gt_targets_idx: list[int] = [
+        i for i, o in enumerate(gt_in_view) if _safe_category(o) in targets
+    ]
+    pred_targets_idx: list[int] = [
+        j for j, o in enumerate(pred_objs) if _safe_category(o) in targets
     ]
 
-    placeholders: list[dict[str, Any]] = []
-    placeholder_seq = 0
-    handled_inview_indices: set[int] = set()
+    pairs: list[MatchedPair] = []
+    n = min(len(gt_targets_idx), len(pred_targets_idx))
+    for k in range(n):
+        pairs.append(MatchedPair(
+            gt_idx=gt_targets_idx[k], pred_idx=pred_targets_idx[k]))
 
-    # Positional zip: pred JSON order → GT order, one-to-one
-    for (gt_i, gt_obj), pred_obj in zip(target_inview, target_pred):
-        _apply_overlay_grid(gt_obj, pred_obj)
-        handled_inview_indices.add(gt_i)
-
-    # Pred surplus → placeholder spheres
-    for pred_obj in target_pred[len(target_inview):]:
-        placeholder_seq += 1
-        ph = _make_placeholder(pred_obj, placeholder_seq)
-        placeholders.append(ph)
-        print(
-            f"[compose] Grid surplus prediction — appending placeholder: "
-            f"{ph['id']} (category={pred_obj.get('category')!r})",
-            file=sys.stderr,
-        )
-
-    # GT surplus → nullify (hide in render)
-    for gt_i, gt_obj in target_inview[len(target_pred):]:
-        _nullify_geometry(gt_obj)
-        handled_inview_indices.add(gt_i)
-
-    return inview_with_gt, placeholders
+    unmatched_gt = set(gt_targets_idx[n:])
+    unmatched_pred = set(pred_targets_idx[n:])
+    return pairs, unmatched_gt, unmatched_pred
 
 
 # ---------------------------------------------------------------------------
-# GT merge
+# Payload construction
 # ---------------------------------------------------------------------------
 
 
-def _merge_with_gt(
-    gt_data: dict[str, Any],
-    updated_inview: list[dict[str, Any]],
-    placeholders: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """Overlay updated in-view objects and placeholders onto the full GT document."""
-    out = copy.deepcopy(gt_data)
-    scene = out.setdefault("scene", {})
-    room = scene.setdefault("room", {})
-    gt_objs: list[dict[str, Any]] = scene.setdefault("objects", [])
+def _build_matched_entries(
+    pairs: list[MatchedPair],
+    gt_in_view: list[dict[str, Any]],
+    pred_objs: list[dict[str, Any]],
+    originals: dict[str, dict[str, list[float]]],
+    *,
+    verbose: bool = False,
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for pair in pairs:
+        gt_obj = gt_in_view[pair.gt_idx]
+        pred_obj = pred_objs[pair.pred_idx]
+        gt_id = str(gt_obj.get("id", ""))
+        cat = _safe_category(gt_obj)
 
-    id_to_idx: dict[str, int] = {
-        str(o["id"]): i
-        for i, o in enumerate(gt_objs)
-        if isinstance(o, dict) and o.get("id") is not None
-    }
+        orig = originals.get(gt_id)
+        if orig is None:
+            print(
+                f"[compose] WARNING: {gt_id!r} not found in scene.blend — "
+                f"skipping this match",
+                file=sys.stderr,
+            )
+            continue
 
-    for obj in updated_inview:
-        oid = str(obj.get("id", ""))
-        if oid in id_to_idx:
-            gt_objs[id_to_idx[oid]] = copy.deepcopy(obj)
+        pose = invert_pose(pred_obj, gt_obj, orig, cat)
 
-    for ph in placeholders:
-        gt_objs.append(copy.deepcopy(ph))
+        # Wall-mounted vs floor-standing Z policy.
+        # Floor-standing: preserve scene.blend's obj.location.z verbatim to
+        # respect Infinigen's per-asset origin-z quirks.
+        if not is_wall_mounted(cat):
+            pose["final_location"][2] = orig["location"][2]
 
-    room["asset_count"] = len(gt_objs)
+        if verbose:
+            print(
+                f"[compose]   matched {gt_id} ({cat}): "
+                f"loc={pose['final_location']} rot_z={pose['final_rotation_z']} "
+                f"dim={pose['final_dimensions']}",
+                file=sys.stderr,
+            )
+
+        out.append({
+            "gt_id":              gt_id,
+            "category":           cat,
+            "final_location":     pose["final_location"],
+            "final_rotation_z":   pose["final_rotation_z"],
+            "final_dimensions":   pose["final_dimensions"],
+        })
+    return out
+
+
+def _build_hide_entries(
+    unmatched_gt: set[int],
+    gt_in_view: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "gt_id":    str(gt_in_view[i].get("id", "")),
+            "category": _safe_category(gt_in_view[i]),
+        }
+        for i in sorted(unmatched_gt)
+    ]
+
+
+def _build_hallucination_entries(
+    unmatched_pred: set[int],
+    pred_objs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for j in sorted(unmatched_pred):
+        obj = pred_objs[j]
+        pos = obj.get("position")
+        dim = obj.get("dimensions")
+        if not isinstance(pos, list) or len(pos) < 3:
+            print(
+                f"[compose] WARNING: hallucinated pred object missing "
+                f"position; skipping: {obj!r}",
+                file=sys.stderr,
+            )
+            continue
+        if isinstance(dim, list) and len(dim) >= 3:
+            dim_mean = (float(dim[0]) + float(dim[1]) + float(dim[2])) / 3.0
+        else:
+            dim_mean = 0.3  # fall-back radius cue
+        out.append({
+            "pred_category": _safe_category(obj),
+            "pred_position": [float(pos[0]), float(pos[1]), float(pos[2])],
+            "pred_dim_mean": round(float(dim_mean), 4),
+        })
     return out
 
 
 # ---------------------------------------------------------------------------
-# Main pipeline
+# Top-level pipeline
 # ---------------------------------------------------------------------------
 
 
@@ -355,86 +323,110 @@ def run_compose(
     info_path: Path,
     gt_path: Path,
     prediction_path: Path,
+    blend_path: Path,
     render_out: Path,
+    scene_id: str,
+    model_id: str,
     scene_dir: Path | None = None,
     *,
     verbose: bool = False,
 ) -> None:
-    inview_objs = _load_objects_in_view(info_path.resolve())
+    # ── Inputs ──────────────────────────────────────────────────────────
+    gt_data = _load_json(gt_path)
+    pred = _load_json(prediction_path)
+    info = _load_json(info_path)
 
-    with open(gt_path.resolve(), encoding="utf-8") as f:
-        gt_data: dict[str, Any] = json.load(f)
-    with open(prediction_path.resolve(), encoding="utf-8") as f:
-        pred: dict[str, Any] = json.load(f)
-
-    # Transform predicted coordinates from camera-aligned frame to world frame.
-    # metadata.json is expected alongside objects_in_view.json in the scene dir.
-    _scene_dir = scene_dir or info_path.resolve().parent
-    pred, delta_deg = _ct_transform_pred_scene(pred, _scene_dir, verbose=verbose)
-    if verbose and delta_deg is not None:
-        print(f"[compose] applied camera transform: delta={delta_deg}°", file=sys.stderr)
+    inview_list = info.get("objects")
+    if not isinstance(inview_list, list):
+        raise ValueError(f"{info_path}: missing or invalid 'objects' list")
+    inview_ids = {str(o.get("id", "")) for o in inview_list if isinstance(o, dict)}
 
     room_type = _get_room_type(gt_data)
-    gt_index = _build_gt_index(gt_data)
-    inview_with_gt = _join_inview_with_gt(inview_objs, gt_index)
 
-    if is_grid_scene(room_type):
-        print(f"[compose] Grid scene detected ({room_type}) — using positional write-back", file=sys.stderr)
-        updated_inview, placeholders = _apply_grid_matches(inview_with_gt, pred, room_type)
+    # ── Camera-frame → world-frame on predictions ──────────────────────
+    _scene_dir = scene_dir or info_path.resolve().parent
+    pred, delta_deg = transform_pred_scene(pred, _scene_dir, verbose=verbose)
+    if verbose:
+        print(
+            f"[compose] camera transform delta = {delta_deg}° "
+            f"(None means metadata missing; pred used as-is)",
+            file=sys.stderr,
+        )
+
+    # ── GT filter by in-view ids ───────────────────────────────────────
+    gt_all = extract_objects(gt_data)
+    gt_in_view = _filter_in_view(gt_all, inview_ids)
+    if verbose:
+        print(
+            f"[compose] {len(gt_in_view)}/{len(gt_all)} GT objects in view",
+            file=sys.stderr,
+        )
+
+    pred_objs = extract_objects(pred)
+
+    # ── Matching ───────────────────────────────────────────────────────
+    grid = is_grid_scene(room_type)
+    if grid:
+        print(
+            f"[compose] grid scene ({room_type}) — positional zip on target categories",
+            file=sys.stderr,
+        )
+        pairs, unmatched_gt, unmatched_pred = _match_grid(
+            gt_in_view, pred_objs, room_type or ""
+        )
     else:
-        updated_inview, placeholders = _apply_matches(inview_with_gt, pred)
+        pairs, unmatched_gt, unmatched_pred = _match_non_grid(gt_in_view, pred_objs)
 
-    pseudo = _merge_with_gt(gt_data, updated_inview, placeholders)
+    if verbose:
+        print(
+            f"[compose] matched={len(pairs)} "
+            f"unmatched_gt={len(unmatched_gt)} "
+            f"unmatched_pred={len(unmatched_pred)}",
+            file=sys.stderr,
+        )
+
+    # ── Read original pose from scene.blend (only for matched ids) ─────
+    matched_ids = [
+        str(gt_in_view[p.gt_idx].get("id", "")) for p in pairs
+    ]
+    try:
+        originals = _read_original_poses(blend_path, matched_ids)
+    except ImportError as exc:
+        raise RuntimeError(
+            "compose.py requires a Python that can import bpy. "
+            "Run via reconstruct.py in the Infinigen conda env."
+        ) from exc
+
+    # ── Build render payload ───────────────────────────────────────────
+    matched_entries = _build_matched_entries(
+        pairs, gt_in_view, pred_objs, originals, verbose=verbose,
+    )
+    hide_entries = _build_hide_entries(unmatched_gt, gt_in_view)
+    halluc_entries = _build_hallucination_entries(unmatched_pred, pred_objs)
+
+    payload = {
+        "scene_id":         scene_id,
+        "model_id":         model_id,
+        "room_type":        room_type,
+        "is_grid_scene":    grid,
+        "camera_transform": {"delta_deg": delta_deg},
+        "matched":          matched_entries,
+        "hide":             hide_entries,
+        "hallucination":    halluc_entries,
+    }
 
     render_out = render_out.resolve()
     render_out.parent.mkdir(parents=True, exist_ok=True)
     with open(render_out, "w", encoding="utf-8") as f:
-        json.dump(pseudo, f, indent=2, ensure_ascii=False)
+        json.dump(payload, f, indent=2, ensure_ascii=False)
         f.write("\n")
 
-
-# ---------------------------------------------------------------------------
-# Verification helper (--verify)
-# ---------------------------------------------------------------------------
-
-
-def _verify_camera_transform(scene_dir: Path, gt_path: Path) -> None:
-    """Print camera yaw, snap delta, and GT object positions for manual inspection.
-
-    Usage: python compose.py --verify --scene-dir <scene_dir> --gt-json <GT.json>
-    """
-    from benchmarks.camera_transform import (
-        load_camera_meta, camera_yaw_deg, snap_delta_deg, needs_dim_swap
+    print(
+        f"[compose] written: {render_out}  "
+        f"(matched={len(matched_entries)}, hide={len(hide_entries)}, "
+        f"hallucination={len(halluc_entries)})",
+        file=sys.stderr,
     )
-
-    cam_meta = load_camera_meta(scene_dir)
-    if cam_meta is None:
-        print("[verify] ERROR: metadata.json not found or missing camera.rotation_euler", file=sys.stderr)
-        return
-
-    yaw_deg = camera_yaw_deg(cam_meta)
-    delta = snap_delta_deg(yaw_deg)
-    swap = needs_dim_swap(delta)
-
-    print(f"[verify] scene_dir          : {scene_dir}")
-    print(f"[verify] rotation_euler     : {cam_meta['rotation_euler']}")
-    print(f"[verify] camera yaw         : {yaw_deg:.2f}°  (continuous)")
-    print(f"[verify] snap delta         : {delta}°  (applied to pred)")
-    print(f"[verify] swap W↔D          : {swap}")
-
-    if gt_path.is_file():
-        with open(gt_path, encoding="utf-8") as f:
-            gt_data = json.load(f)
-        gt_objs = extract_objects(gt_data)
-        print(f"\n[verify] GT objects ({len(gt_objs)} total):")
-        print(f"  {'id':30s}  {'category':20s}  {'position (world)':30s}  yaw")
-        for o in gt_objs:
-            oid = str(o.get("id", "?"))
-            cat = str(o.get("category", "?"))
-            pos = o.get("position", [])
-            yaw = o.get("rotation_yaw", "?")
-            pos_str = f"[{pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f}]" if isinstance(pos, list) and len(pos) >= 3 else str(pos)
-            print(f"  {oid:30s}  {cat:20s}  {pos_str:30s}  {yaw}")
 
 
 # ---------------------------------------------------------------------------
@@ -444,62 +436,49 @@ def _verify_camera_transform(scene_dir: Path, gt_path: Path) -> None:
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="IDEAL: match predictions -> write geometry -> merge GT -> {model_id}_render.json"
+        description="IDEAL compose: build <model>_render.json from pred + GT + scene.blend"
     )
-    p.add_argument("--blend", type=Path, default=None,
-                   help="scene.blend path (reserved for debugging, unused)")
-    p.add_argument("--prediction", type=Path, default=None,
-                   help="VLM prediction JSON")
-    p.add_argument("--info-json", type=Path, default=None,
-                   help="objects_in_view.json (or info.json)")
-    p.add_argument("--gt-json", type=Path, default=None,
+    p.add_argument("--prediction", type=Path, required=True,
+                   help="VLM prediction JSON (camera-frame)")
+    p.add_argument("--info-json", type=Path, required=True,
+                   help="objects_in_view.json (in-view id list + pixel stats)")
+    p.add_argument("--gt-json", type=Path, required=True,
                    help="GT.json for the scene")
-    p.add_argument("--protocol", default="floor", choices=("floor", "camera"))
-    p.add_argument("--scene-id", default=None)
-    p.add_argument("--model-id", default=None,
+    p.add_argument("--blend", type=Path, required=True,
+                   help="scene.blend for the scene (read-only)")
+    p.add_argument("--protocol", default="floor", choices=("floor", "camera"),
+                   help="prediction coordinate frame (for logging only)")
+    p.add_argument("--scene-id", required=True)
+    p.add_argument("--model-id", required=True,
                    help="stem of the prediction file; output is {model_id}_render.json")
     p.add_argument("--scene-dir", type=Path, default=None,
-                   help="scene directory containing metadata.json (auto-inferred from --info-json if omitted)")
-    p.add_argument("--verbose", action="store_true",
-                   help="print per-object coordinate transform details")
-    p.add_argument("--verify", action="store_true",
-                   help="print camera forward angle and GT layout for manual inspection; "
-                        "requires --scene-dir (or --info-json) and --gt-json")
+                   help="scene directory with metadata.json "
+                        "(defaults to parent of --info-json)")
+    p.add_argument("--verbose", action="store_true")
     return p.parse_args()
 
 
 def main() -> int:
     args = _parse_args()
-
-    if args.verify:
-        scene_dir = args.scene_dir or (args.info_json.resolve().parent if args.info_json else None)
-        gt_path = args.gt_json or Path("/dev/null")
-        if scene_dir is None:
-            print("[compose] --verify requires --scene-dir or --info-json", file=sys.stderr)
-            return 1
-        _verify_camera_transform(scene_dir, gt_path)
-        return 0
-
-    # Normal pipeline — all three required args must be present
-    missing = [n for n, v in [("--prediction", args.prediction),
-                               ("--info-json", args.info_json),
-                               ("--gt-json", args.gt_json),
-                               ("--model-id", args.model_id),
-                               ("--scene-id", args.scene_id)] if v is None]
-    if missing:
-        print(f"[compose] Missing required arguments: {', '.join(missing)}", file=sys.stderr)
-        return 1
-
     pred = args.prediction.resolve()
     render_out = pred.parent / f"{args.model_id}_render.json"
     scene_dir = args.scene_dir or args.info_json.resolve().parent
+
     try:
-        run_compose(args.info_json, args.gt_json, pred, render_out,
-                    scene_dir=scene_dir, verbose=args.verbose)
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        print(f"[compose] {exc}", file=sys.stderr)
+        run_compose(
+            info_path=args.info_json,
+            gt_path=args.gt_json,
+            prediction_path=pred,
+            blend_path=args.blend,
+            render_out=render_out,
+            scene_id=args.scene_id,
+            model_id=args.model_id,
+            scene_dir=scene_dir,
+            verbose=args.verbose,
+        )
+    except (OSError, ValueError, json.JSONDecodeError, RuntimeError) as exc:
+        print(f"[compose] ERROR: {exc}", file=sys.stderr)
         return 1
-    print(f"[compose] written: {render_out}", file=sys.stderr)
     return 0
 
 

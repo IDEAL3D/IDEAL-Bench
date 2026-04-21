@@ -117,3 +117,28 @@ YAW_180_SYMMETRIC_CATEGORIES: FrozenSet[str] = frozenset({
 YAW_90_SYMMETRIC_CATEGORIES: FrozenSet[str] = frozenset({
     "side_table",
 })
+
+
+# ---------------------------------------------------------------------------
+# Wall-mounted categories
+# ---------------------------------------------------------------------------
+# Used by reconstruction (render.py): for these categories, the predicted
+# z coordinate is meaningful (the object is attached to a wall, not the floor)
+# and is written back verbatim during reconstruction. For all other
+# (floor-standing) categories, reconstruction preserves the original
+# ``obj.location.z`` from scene.blend regardless of the predicted z.
+#
+# Rationale: Infinigen asset origins are not uniformly at floor level, so
+# overwriting z for floor-standing objects would cause spurious vertical
+# jitter that does not reflect any real prediction error. Wall-mounted
+# objects don't have this problem — their z genuinely matters.
+
+WALL_MOUNTED_CATEGORIES: FrozenSet[str] = frozenset({
+    "mirror",
+    "wall_art",
+})
+
+
+def is_wall_mounted(category: str) -> bool:
+    """Return True if the given category is wall-mounted (z should be written from prediction)."""
+    return category.strip().lower() in WALL_MOUNTED_CATEGORIES

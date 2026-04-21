@@ -36,7 +36,7 @@ Usage (from the repository root)::
     python reconstruct.py                      # floor protocol, all scenes
     python reconstruct.py --protocol floor
     python reconstruct.py --protocol all       # floor + camera
-    python reconstruct.py --scene-id bedroom_s1412833193 --gemini
+    python reconstruct.py --scene-id bedroom_s14704319 --gemini
     python reconstruct.py --scene-id bedroom_s1412833193 --gemini \\
         --gemini-model gemini-2.5-pro-preview-03-25
     python reconstruct.py --task-dir result/inference/floor/bedroom_s1412833192 \\
@@ -100,10 +100,26 @@ def _resolve_scene_dir(project_dir: Path, scenes_root: Path, scene_id: str) -> P
         if _valid(cand):
             return cand
 
-    raise FileNotFoundError(
+    # 目录存在但缺 sidecar / GT 时给更明确的提示（常见于占位空目录）
+    hints: list[str] = []
+    for r in roots:
+        d = (r / scene_id).resolve()
+        if d.is_dir():
+            miss = []
+            if not ((d / "objects_in_view.json").is_file() or (d / "info.json").is_file()):
+                miss.append("objects_in_view.json or info.json")
+            if not (d / "GT.json").is_file():
+                miss.append("GT.json")
+            if miss:
+                hints.append(f"{d} (missing: {', '.join(miss)})")
+
+    msg = (
         "compose requires objects_in_view.json (or info.json) and GT.json; tried: "
         + ", ".join(str(r / scene_id) for r in roots)
     )
+    if hints:
+        msg += ". " + "; ".join(hints)
+    raise FileNotFoundError(msg)
 
 
 def resolve_gemini_prediction(
@@ -250,6 +266,13 @@ def _build_compose_cmd(
     project_dir = _project_dir()
     scene_dir = _resolve_scene_dir(project_dir, args.scenes_root, scene_id)
     blend = _rt.scene_blend_path(scene_dir.parent, args.blend_root, scene_id)
+    if not blend.is_file():
+        # compose now reads original (obj.location, obj.dimensions) from
+        # scene.blend via bpy, so a missing blend is a hard failure rather
+        # than a silent skip.
+        raise FileNotFoundError(
+            f"scene.blend not found for scene_id={scene_id!r}: {blend}"
+        )
     info_json = (
         scene_dir / "objects_in_view.json"
         if (scene_dir / "objects_in_view.json").is_file()
@@ -262,12 +285,11 @@ def _build_compose_cmd(
         "--prediction", str(prediction.resolve()),
         "--info-json",  str(info_json),
         "--gt-json",    str(gt_json.resolve()),
+        "--blend",      str(blend.resolve()),
         "--protocol",   protocol,
         "--scene-id",   scene_id,
         "--model-id",   model_id,
     ]
-    if blend.is_file():
-        cmd += ["--blend", str(blend)]
     return cmd
 
 
@@ -279,6 +301,9 @@ def _build_render_cmd(
     render_json = prediction.parent / f"{model_id}_render.json"
     out_png = prediction.parent / f"{model_id}.png"
 
+    # render.py v2 reads compose's render.json directly; the schema already
+    # tells it which objects are matched / hidden / hallucinated, so the
+    # objects_in_view.json whitelist no longer needs to be passed through.
     return [
         sys.executable, str(_render_script()), "--",
         str(blend.resolve()),

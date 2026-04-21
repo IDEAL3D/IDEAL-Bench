@@ -34,7 +34,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
-from metrics_grid import evaluate_grid
+from metrics_grid import SUPPORTED_ROOMS, evaluate_grid
 from extract_grid import get_room_type
 from export_results import (
     export_per_model_csv,
@@ -336,6 +336,13 @@ def upsert_row(conn: sqlite3.Connection, row: Dict[str, Any]) -> None:
 # Core evaluation
 # ---------------------------------------------------------------------------
 
+def _is_grid_room(room_type: Optional[str]) -> bool:
+    """Rooms that use layout-grid metrics (dimension 5)."""
+    if not room_type:
+        return False
+    return str(room_type).strip().lower() in SUPPORTED_ROOMS
+
+
 def evaluate(
     gt_payload: Dict[str, Any],
     pred_payload: Dict[str, Any],
@@ -343,7 +350,7 @@ def evaluate(
     scene_id  = gt_payload.get("scene_id", "unknown")
     room_type = get_room_type(gt_payload)
 
-    if is_grid_scene(room_type):
+    if _is_grid_room(room_type):
         # Grid pipeline (classroom / library / office): D3 + D4 + D5 only.
         # D1 and D2 are not applicable — object matching is not run.
         dim_1_4 = _evaluate_scene_dims_1_4(gt_payload, pred_payload)
