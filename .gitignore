@@ -1,0 +1,50 @@
+# data/: tracked shells only — .gitkeep under data/scenes/, data/scenes_raw/; ignore other contents
+data/*
+!data/scenes/
+data/scenes/**
+!data/scenes/.gitkeep
+!data/scenes_raw/
+data/scenes_raw/**
+!data/scenes_raw/.gitkeep
+
+# result/: keep top-level layout (inference, evaluation, reconstruction, judge_vlm); ignore bulk artifacts
+result/*
+!result/inference/
+!result/evaluation/
+!result/reconstruction/
+!result/judge_vlm/
+
+# result/inference/: only track inference_result/.gitkeep shell; ignore inference_result contents
+result/inference/**
+!result/inference/inference_result/
+result/inference/inference_result/**
+!result/inference/inference_result/.gitkeep
+
+# result/evaluation/: shell only (.gitkeep)
+result/evaluation/**
+!result/evaluation/.gitkeep
+
+# result/reconstruction/: gt/ and prediction/ each keep .gitkeep only
+result/reconstruction/**
+!result/reconstruction/gt/
+!result/reconstruction/prediction/
+result/reconstruction/gt/**
+!result/reconstruction/gt/.gitkeep
+result/reconstruction/prediction/**
+!result/reconstruction/prediction/.gitkeep
+
+# result/judge_vlm/: input/ and output/ each keep .gitkeep only
+result/judge_vlm/**
+!result/judge_vlm/input/
+!result/judge_vlm/output/
+result/judge_vlm/input/**
+!result/judge_vlm/input/.gitkeep
+result/judge_vlm/output/**
+!result/judge_vlm/output/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
