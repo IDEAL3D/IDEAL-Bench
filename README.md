@@ -158,12 +158,15 @@ Outputs are written next to each prediction JSON; see the docstring in `benchmar
 ## Citation
 
 ```bibtex
-@inproceedings{ideal2026bench,
-  title     = {{IDEAL}-Bench: Indoor Dataset for Evaluating Analysis by 3D Layout Reasoning},
-  author    = {Anonymous},
-  booktitle = {Advances in Neural Information Processing Systems (NeurIPS)},
-  year      = {2026}
-}
+@misc{cai2026idealbenchindoordatasetevaluation,
+      title={IDEAL-Bench: Indoor Dataset and Evaluation suite for Analyzing 3D Layout reasoning},
+      author={Yuening Cai and Junwei Zhou and Youran Qu and Yu-Wing Tai},
+      year={2026},
+      eprint={2607.03614},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV},
+      url={https://arxiv.org/abs/2607.03614},
+  }
 ```
 
 ---
